@@ -13,6 +13,5 @@ void handleTalonLogic();
 void saveDailyWaterConsumption();
 void loadWaterData();
 void calculateWaterStats();
-void startWaterStatsAsync();  // async wrapper, non-bloquant
 
 } // namespace DataLogging

@@ -98,4 +98,3 @@ main{max-width:900px;margin:16px auto;padding:0 12px}
     grid-template-columns: repeat(3, 1fr);
   }
 }
-.log-tail{background:#111;color:#ddd;padding:10px;white-space:pre-wrap;border-radius:6px;max-height:40vh;overflow:auto;font-family:ui-monospace,Consolas,monospace;font-size:12px}

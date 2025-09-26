@@ -1,11 +1,8 @@
 #include "web_server.h"
 #include "state.h"
-#include "data_logging.h"
-#include "invoices_debug.h"
 #include "network.h"
 #include "utils.h"
 #include <WiFi.h>
-#include <SD.h>
 
 WebConfigServer WebServerInstance;
 
@@ -15,66 +12,12 @@ void generateDebugJson(JsonDocument& doc) {
     system["uptime_min"] = (millis() - sysState.bootTime) / 60000;
     system["free_ram_kb"] = ESP.getFreeHeap() / 1024;
     system["brightness"] = M5.Display.getBrightness();
-    if (g_solarTimes.isValid) {
-        char srBuf[6], ssBuf[6];
-        snprintf(srBuf, sizeof(srBuf), "%d:%02d", g_solarTimes.sunriseHour, g_solarTimes.sunriseMinute);
-        snprintf(ssBuf, sizeof(ssBuf), "%d:%02d", g_solarTimes.sunsetHour, g_solarTimes.sunsetMinute);
-        system["sunrise"] = srBuf;
-        system["sunset"] = ssBuf;
-    }
 
     JsonObject network = doc["network"].to<JsonObject>();
     network["wifi_connected"] = WiFi.isConnected();
-    network["wifi_rssi_dbm"] = WiFi.RSSI();
-    network["ip_address"] = WiFi.localIP().toString();
-    network["mqtt_connected"] = Network::mqttClient.connected();
-    network["last_data_sec_ago"] = (millis() - sysState.lastDataReceived) / 1000;
-
-    JsonObject power = doc["power"].to<JsonObject>();
-    power["maison_w"] = powerData.maison_watts;
-    power["pv_w"] = powerData.pv_watts;
-    power["grid_w"] = powerData.grid_watts;
-    power["talon_power"] = powerData.talon_power;
-    // WEB V27 FIX: Ajout de l'autoconsommation en pourcentage (si parsable) et en chaîne brute.
-    int autoconsommation_pct_val = -1;
-    if (sscanf(powerData.autoconsommation.c_str(), "%d %%", &autoconsommation_pct_val) == 1) {
-        if (autoconsommation_pct_val >= 0 && autoconsommation_pct_val <= 100) {
-            power["autoconsommation_pct"] = autoconsommation_pct_val;
-        }
-    }
-    power["autoconsommation_str"] = powerData.autoconsommation;
-    if (g_powerStats.sampleCount > 0) {
-        power["maison_min_w"] = String(g_powerStats.minPower, 0);
-        power["maison_max_w"] = String(g_powerStats.maxPower, 0);
-        power["maison_avg_w"] = String(g_powerStats.avgPower, 0);
-    }
-
-    JsonObject water = doc["water"].to<JsonObject>();
-    water["current_litres"] = sensorData.eau_litres;
-    water["talon_water"] = sensorData.talon_water;
-    if(g_waterStats.dataLoaded) {
-        water["yesterday_l"] = g_waterStats.yesterday;
-        water["avg_7d_l"] = g_waterStats.avg7d;
-        water["avg_30d_l"] = g_waterStats.avg30d;
-    }
-
-    JsonObject weather = doc["weather"].to<JsonObject>();
-    if(g_weather.valid) {
-        weather["current_wind_kmh"] = String(g_weather.currentWindKmh, 1);
-        weather["max_wind_today_kmh"] = String(g_weather.maxWindTodayKmh, 1);
-        weather["max_gust_today_kmh"] = String(g_weather.maxGustTodayKmh, 1);
-    }
-    weather["last_http_code"] = g_weather.lastHttpCode;
-    
-    // WEB V27 FIX: Ajout de la section pour les températures de l'onduleur.
-    JsonObject inverter = doc["inverter"].to<JsonObject>();
-    inverter["temp1_c"] = sensorData.temp_onduleur1;
-    inverter["temp2_c"] = sensorData.temp_onduleur2;
-
-    String invoiceReport;
-    InvoicesDebug::generate_report(invoiceReport);
-    doc["invoices_report"] = invoiceReport;
+    network["wifi_rssi"] = WiFi.RSSI();
 }
+
 
 WebConfigServer::WebConfigServer(uint16_t port) : _server(port) {}
 
@@ -103,7 +46,6 @@ bool WebConfigServer::begin(const char* hostname) {
   
   _server.on("/api/debug", HTTP_GET, [](AsyncWebServerRequest* req){
       JsonDocument doc;
-      DataLogging::loadWaterData();
       generateDebugJson(doc);
       String body;
       serializeJson(doc, body);
@@ -118,26 +60,7 @@ bool WebConfigServer::begin(const char* hostname) {
     request->send(404, "text/plain", "Not found");
   });
 
-  
-  // Serve SD log file and API tails
-  _server.serveStatic("/system.log", SD, "/system.log").setCacheControl("no-store");
-  auto sendLogTail = [](AsyncWebServerRequest* req){
-      if (!SD.begin()) { req->send(500, "text/plain", "SD not ready"); return; }
-      File f = SD.open("/system.log", FILE_READ);
-      if (!f) { req->send(404, "text/plain", "log not found"); return; }
-      const size_t MAX = 64 * 1024;
-      if (f.size() > MAX) f.seek(f.size() - MAX);
-      auto* res = req->beginResponseStream("text/plain");
-      res->addHeader("Cache-Control", "no-store");
-      while (f.available()) { res->write((uint8_t)f.read()); delay(0); }
-      f.close();
-      req->send(res);
-  };
-  _server.on("/api/log", HTTP_GET, sendLogTail);
-  _server.on("/api/log/tail", HTTP_GET, sendLogTail);
-  _server.on("/log", HTTP_GET, sendLogTail);
-  _server.on("/logs/tail", HTTP_GET, sendLogTail);
-_server.begin();
+  _server.begin();
   _running = true;
   return true;
 }

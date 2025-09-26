@@ -23,7 +23,6 @@ static void computePeriodStarts(const struct tm& nowTm, struct tm& currStart, st
 static void sumPeriodFromProcessed(time_t startTs, time_t endTsExclusive, double& totalCost, double& hcKwh, double& hpKwh);
 
 // Variables statiques
-static volatile bool s_dailyJobBusy = false;
 static String s_lastApiUrl;
 static String s_lastApiMsg;
 static WiFiClient g_invoiceClient;
@@ -94,9 +93,6 @@ void processExistingRawForCurrentPeriod() {
 }
 
 void triggerDailyUpdate() {
-  if (s_dailyJobBusy) { DataLogging::writeLog(LogLevel::LOG_WARN, "Invoices: daily update skipped (busy)"); return; }
-  struct _BusyGuard { volatile bool& f; _BusyGuard(volatile bool& r):f(r){f=true;} ~_BusyGuard(){f=false;} }; _BusyGuard _g(s_dailyJobBusy);
-
   DataLogging::writeLog(LogLevel::LOG_INFO, "Invoices: daily update start.");
   struct tm timeinfo;
   if (!getLocalTime(&timeinfo)) {
@@ -116,11 +112,7 @@ void triggerDailyUpdate() {
 
 void checkContinuityAndRefetch() {
   DataLogging::writeLog(LogLevel::LOG_INFO, "Invoices: continuity check start.");
-  if (s_dailyJobBusy) { DataLogging::writeLog(LogLevel::LOG_WARN, "Invoices: continuity skipped (busy)"); return; }
-  xTaskCreatePinnedToCore([](void*){
-    triggerDailyUpdate();
-    vTaskDelete(nullptr);
-  }, "invDaily", 8192, nullptr, 1, nullptr, 0);
+  triggerDailyUpdate();
 }
 
 } // namespace InvoicesStore

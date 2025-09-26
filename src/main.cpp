@@ -20,7 +20,7 @@
 #include "sonometer_screen.h"
 #include "boot_ui.h"
 
-constexpr const char* APP_VERSION = "v27.6-fix"; // Version mise à jour
+constexpr const char* APP_VERSION = "v28.0"; // Version mise à jour
 
 SystemState sysState;
 DisplayState dispState;
@@ -63,17 +63,17 @@ void setup() {
   BootUI::begin();
   BootUI::drawVersion(APP_VERSION);
 
-  BootUI::setStep(++current_step, TOTAL_BOOT_STEPS, "SPIFFS");
+  BootUI::setStep(++current_step, TOTAL_BOOT_STEPS, "Systeme Fichiers (SPIFFS)");
   if (!SPIFFS.begin(true)) {
     M5.Display.fillScreen(TFT_RED); M5.Display.drawString("SPIFFS Mount Failed", 160, 120); while(true) delay(1000);
   }
 
-  BootUI::setStep(++current_step, TOTAL_BOOT_STEPS, "SD");
+  BootUI::setStep(++current_step, TOTAL_BOOT_STEPS, "Systeme Fichiers (SD)");
   if (!SD.begin(4)) {
     M5.Display.fillScreen(TFT_RED); M5.Display.drawString("SD Card Mount Failed", 160, 120); while (true) delay(1000);
   }
   
-  BootUI::setStep(++current_step, TOTAL_BOOT_STEPS, "Config");
+  BootUI::setStep(++current_step, TOTAL_BOOT_STEPS, "Chargement Configuration");
   if (!Settings.begin(SD, "/config.json")) {
     BootUI::setProgress((current_step * 100 / TOTAL_BOOT_STEPS), "config.json cree");
     delay(1000);
@@ -85,7 +85,7 @@ void setup() {
       }
   });
 
-  BootUI::setStep(++current_step, TOTAL_BOOT_STEPS, "Logs");
+  BootUI::setStep(++current_step, TOTAL_BOOT_STEPS, "Initialisation Logs");
   DataLogging::init();
   DataLogging::writeLog(LogLevel::LOG_INFO, String("=== SYSTEM BOOT ===") + APP_VERSION);
   sysState.bootTime = millis();
@@ -99,7 +99,7 @@ void setup() {
   });
   Network::init();
 
-  BootUI::setStep(++current_step, TOTAL_BOOT_STEPS, "Web...");
+  BootUI::setStep(++current_step, TOTAL_BOOT_STEPS, "Serveur Web...");
   bool webOk = WebServerInstance.begin("m5core2");
   if (webOk) {
     Serial.println(F("[WEB] Serveur demarre."));
@@ -109,23 +109,23 @@ void setup() {
     BootUI::setStep(current_step, TOTAL_BOOT_STEPS, "[WARNING] Web Server failed, continuing...");
   }
 
-  BootUI::setStep(++current_step, TOTAL_BOOT_STEPS, "Heure");
+  BootUI::setStep(++current_step, TOTAL_BOOT_STEPS, "Synchronisation Heure (NTP)");
   struct tm timeinfo;
   if (WiFi.isConnected()) {
     configTime(GMT_OFFSET_SEC, DAYLIGHT_OFFSET_SEC, NTP_SERVER);
     if (getLocalTime(&timeinfo, 5000)) timeIsSet = true;
   }
 
-  BootUI::setStep(++current_step, TOTAL_BOOT_STEPS, "MQTT");
+  BootUI::setStep(++current_step, TOTAL_BOOT_STEPS, "Connexion MQTT...");
   Network::connectMqtt();
 
   if(timeIsSet) {
-    BootUI::setStep(++current_step, TOTAL_BOOT_STEPS, "Soleil");
+    BootUI::setStep(++current_step, TOTAL_BOOT_STEPS, "Calcul Solaire");
     Utils::calculateSolarTimes();
     dispState.isNightMode = UI::shouldBeNightMode();
   } else { current_step++; }
 
-  BootUI::setStep(++current_step, TOTAL_BOOT_STEPS, "Factures");
+  BootUI::setStep(++current_step, TOTAL_BOOT_STEPS, "Initialisation Factures");
   InvoicesStore::init();
   loadLastJobDay();
   DataLogging::writeLog(LogLevel::LOG_INFO, "Post-boot: Processing invoices data...");
@@ -133,7 +133,7 @@ void setup() {
   invoicesIsInitialized = true;
   DataLogging::writeLog(LogLevel::LOG_INFO, "Invoices data processed.");
 
-  BootUI::setStep(++current_step, TOTAL_BOOT_STEPS, "Meteo");
+  BootUI::setStep(++current_step, TOTAL_BOOT_STEPS, "Recuperation Meteo");
   bool weatherOk = Weather::fetch();
   if (!weatherOk) {
     BootUI::setStep(current_step, TOTAL_BOOT_STEPS, "[WARNING] Weather failed, using fallback.");
