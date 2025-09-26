@@ -274,9 +274,21 @@ void calculateWaterStats() {
     writeLog(LogLevel::LOG_INFO, "Water statistics calculation complete.");
 }
 
+
+static TaskHandle_t s_waterTask = nullptr;
+
+void startWaterStatsAsync() {
+    if (s_waterTask) return;
+    xTaskCreatePinnedToCore([](void*){
+        calculateWaterStats();
+        s_waterTask = nullptr;
+        vTaskDelete(nullptr);
+    }, "waterStats", 4096, nullptr, 1, &s_waterTask, 0);
+}
+
 void loadWaterData() {
     if (!g_waterStats.dataLoaded) {
-        calculateWaterStats();
+        startWaterStatsAsync();
     }
 }
 

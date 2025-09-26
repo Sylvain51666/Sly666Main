@@ -20,7 +20,7 @@
 #include "sonometer_screen.h"
 #include "boot_ui.h"
 
-constexpr const char* APP_VERSION = "v27.5";
+constexpr const char* APP_VERSION = "v27.6-fix"; // Version mise à jour
 
 SystemState sysState;
 DisplayState dispState;
@@ -34,7 +34,7 @@ InvoiceParams g_invoiceParams;
 InvoiceData g_invoiceData;
 std::vector<uint8_t> g_wind_icon_png;
 std::vector<uint8_t> g_humidity_icon_png;
-std::vector<uint8_t> g_flame_icon_png; // AJOUT
+std::vector<uint8_t> g_flame_icon_png;
 volatile float g_rawMaisonW = NAN, g_rawPVW = NAN;
 volatile bool g_hasNewShelly = false;
 portMUX_TYPE g_shellyMux = portMUX_INITIALIZER_UNLOCKED;
@@ -63,17 +63,17 @@ void setup() {
   BootUI::begin();
   BootUI::drawVersion(APP_VERSION);
 
-  BootUI::setStep(++current_step, TOTAL_BOOT_STEPS, "Systeme Fichiers (SPIFFS)");
+  BootUI::setStep(++current_step, TOTAL_BOOT_STEPS, "SPIFFS");
   if (!SPIFFS.begin(true)) {
     M5.Display.fillScreen(TFT_RED); M5.Display.drawString("SPIFFS Mount Failed", 160, 120); while(true) delay(1000);
   }
 
-  BootUI::setStep(++current_step, TOTAL_BOOT_STEPS, "Systeme Fichiers (SD)");
+  BootUI::setStep(++current_step, TOTAL_BOOT_STEPS, "SD");
   if (!SD.begin(4)) {
     M5.Display.fillScreen(TFT_RED); M5.Display.drawString("SD Card Mount Failed", 160, 120); while (true) delay(1000);
   }
   
-  BootUI::setStep(++current_step, TOTAL_BOOT_STEPS, "Chargement Configuration");
+  BootUI::setStep(++current_step, TOTAL_BOOT_STEPS, "Config");
   if (!Settings.begin(SD, "/config.json")) {
     BootUI::setProgress((current_step * 100 / TOTAL_BOOT_STEPS), "config.json cree");
     delay(1000);
@@ -85,7 +85,7 @@ void setup() {
       }
   });
 
-  BootUI::setStep(++current_step, TOTAL_BOOT_STEPS, "Initialisation Logs");
+  BootUI::setStep(++current_step, TOTAL_BOOT_STEPS, "Logs");
   DataLogging::init();
   DataLogging::writeLog(LogLevel::LOG_INFO, String("=== SYSTEM BOOT ===") + APP_VERSION);
   sysState.bootTime = millis();
@@ -99,7 +99,7 @@ void setup() {
   });
   Network::init();
 
-  BootUI::setStep(++current_step, TOTAL_BOOT_STEPS, "Serveur Web...");
+  BootUI::setStep(++current_step, TOTAL_BOOT_STEPS, "Web...");
   bool webOk = WebServerInstance.begin("m5core2");
   if (webOk) {
     Serial.println(F("[WEB] Serveur demarre."));
@@ -109,23 +109,23 @@ void setup() {
     BootUI::setStep(current_step, TOTAL_BOOT_STEPS, "[WARNING] Web Server failed, continuing...");
   }
 
-  BootUI::setStep(++current_step, TOTAL_BOOT_STEPS, "Synchronisation Heure (NTP)");
+  BootUI::setStep(++current_step, TOTAL_BOOT_STEPS, "Heure");
   struct tm timeinfo;
   if (WiFi.isConnected()) {
     configTime(GMT_OFFSET_SEC, DAYLIGHT_OFFSET_SEC, NTP_SERVER);
     if (getLocalTime(&timeinfo, 5000)) timeIsSet = true;
   }
 
-  BootUI::setStep(++current_step, TOTAL_BOOT_STEPS, "Connexion MQTT...");
+  BootUI::setStep(++current_step, TOTAL_BOOT_STEPS, "MQTT");
   Network::connectMqtt();
 
   if(timeIsSet) {
-    BootUI::setStep(++current_step, TOTAL_BOOT_STEPS, "Calcul Solaire");
+    BootUI::setStep(++current_step, TOTAL_BOOT_STEPS, "Soleil");
     Utils::calculateSolarTimes();
     dispState.isNightMode = UI::shouldBeNightMode();
   } else { current_step++; }
 
-  BootUI::setStep(++current_step, TOTAL_BOOT_STEPS, "Initialisation Factures");
+  BootUI::setStep(++current_step, TOTAL_BOOT_STEPS, "Factures");
   InvoicesStore::init();
   loadLastJobDay();
   DataLogging::writeLog(LogLevel::LOG_INFO, "Post-boot: Processing invoices data...");
@@ -133,7 +133,7 @@ void setup() {
   invoicesIsInitialized = true;
   DataLogging::writeLog(LogLevel::LOG_INFO, "Invoices data processed.");
 
-  BootUI::setStep(++current_step, TOTAL_BOOT_STEPS, "Recuperation Meteo");
+  BootUI::setStep(++current_step, TOTAL_BOOT_STEPS, "Meteo");
   bool weatherOk = Weather::fetch();
   if (!weatherOk) {
     BootUI::setStep(current_step, TOTAL_BOOT_STEPS, "[WARNING] Weather failed, using fallback.");
@@ -297,6 +297,7 @@ void loop() {
     case SystemStateType::STATE_OK:
       if (dispState.needsRedraw) {
         UI::applyModeChangeNow();
+        UI::updateAlertIcons(); // Mettre à jour les icônes après un redessin complet
         dispState.needsRedraw = false;
       }
 
@@ -347,6 +348,7 @@ void loop() {
 
       UI::updateAnimations();
       UI::updateAllDisplays();
+      UI::updateAlertIcons(); // Appel constant pour vérifier l'état des icônes
       break;
 
     case SystemStateType::STATE_NO_WIFI:

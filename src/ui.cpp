@@ -25,6 +25,16 @@ static uint16_t* bg_buffer_grid = nullptr, *bg_buffer_eau = nullptr, *bg_buffer_
 static uint16_t* bg_buffer_pac = nullptr, *bg_buffer_wave = nullptr, *bg_buffer_solar = nullptr;
 static uint16_t* bg_buffer_fan = nullptr, *bg_buffer_grid_arrow = nullptr, *bg_buffer_toast = nullptr;
 
+// --- AJOUT : Variables statiques pour la gestion des icônes ---
+static bool last_wind_state = false;
+static bool last_humidity_state = false;
+static bool last_flame_state = false;
+static uint16_t* bg_buffer_icons = nullptr;
+static const int ICON_AREA_X = 5, ICON_AREA_Y = 5;
+static const int ICON_WIDTH = 32, ICON_SPACING = 2;
+static const int ICON_AREA_W = ICON_WIDTH + 4;
+static const int ICON_AREA_H = (ICON_WIDTH + ICON_SPACING) * 3;
+
 // --- Last known values for redraw optimization ---
 static String last_val_heure = "", last_val_maison_watts = "", last_val_piscine_temp = "", last_val_pac_temp = "";
 static String last_val_pv_watts = "", last_val_grid_watts = "", last_val_eau_litres = "";
@@ -85,6 +95,9 @@ void init() {
   bg_buffer_fan = (uint16_t*)malloc(PAC_FAN_W * PAC_FAN_H * sizeof(uint16_t));
   bg_buffer_wave = (uint16_t*)malloc(WAVE_W * WAVE_H * sizeof(uint16_t));
   bg_buffer_grid_arrow = (uint16_t*)malloc(GRID_ARROW_W * GRID_ARROW_H * sizeof(uint16_t));
+  
+  // AJOUT : Allouer le buffer pour la zone des icônes
+  bg_buffer_icons = (uint16_t*)malloc(ICON_AREA_W * ICON_AREA_H * sizeof(uint16_t));
   
   spHeure.createSprite(HEURE_DISP_W, HEURE_DISP_H); spMaison.createSprite(MAISON_DISP_W, MAISON_DISP_H);
   spPV.createSprite(PV_DISP_W, PV_DISP_H); spGrid.createSprite(GRID_DISP_W, GRID_DISP_H);
@@ -268,25 +281,42 @@ void showErrorScreen() {
   M5.Display.drawString(msg, 160, 120);
 }
 
-void manageWeatherIcon() {
-  bool shouldShow = g_weather.valid && (g_weather.maxWindTodayKmh >= SETTINGS.wind_alert_threshold_kmh || g_weather.maxGustTodayKmh >= SETTINGS.gust_alert_threshold_kmh);
-  if (shouldShow != dispState.isWindIconOnScreen) {
-    dispState.needsRedraw = true;
-  }
-}
+void updateAlertIcons() {
+    bool current_wind_state = g_weather.valid && 
+                              (g_weather.maxWindTodayKmh >= SETTINGS.wind_alert_threshold_kmh || 
+                               g_weather.maxGustTodayKmh >= SETTINGS.gust_alert_threshold_kmh);
 
-void manageHumidityIcon() {
-  bool shouldShow = (sensorData.studioHumidity > SETTINGS.humidity_alert_threshold);
-  if (shouldShow != dispState.isHumidityIconOnScreen) {
-    dispState.needsRedraw = true;
-  }
-}
+    bool current_humidity_state = (sensorData.studioHumidity > SETTINGS.humidity_alert_threshold);
+    
+    bool current_flame_state = (sensorData.temp_onduleur1 > SETTINGS.inverter_temp_alert_threshold_c) ||
+                               (sensorData.temp_onduleur2 > SETTINGS.inverter_temp_alert_threshold_c);
 
-void manageFlameIcon() {
-  bool shouldShow = (sensorData.temp_onduleur1 > SETTINGS.inverter_temp_alert_threshold_c || sensorData.temp_onduleur2 > SETTINGS.inverter_temp_alert_threshold_c);
-  if (shouldShow != dispState.isFlameIconOnScreen) {
-    dispState.needsRedraw = true;
-  }
+    bool state_changed = (current_wind_state != last_wind_state) ||
+                         (current_humidity_state != last_humidity_state) ||
+                         (current_flame_state != last_flame_state);
+
+    if (state_changed || dispState.needsRedraw) {
+        // Restaurer l'arrière-plan de la zone d'icônes
+        if(bg_buffer_icons) M5.Display.pushImage(ICON_AREA_X, ICON_AREA_Y, ICON_AREA_W, ICON_AREA_H, bg_buffer_icons);
+
+        int current_y = ICON_AREA_Y;
+
+        if (current_wind_state && !g_wind_icon_png.empty()) {
+            M5.Display.drawPng(g_wind_icon_png.data(), g_wind_icon_png.size(), ICON_AREA_X, current_y);
+            current_y += ICON_WIDTH + ICON_SPACING;
+        }
+        if (current_humidity_state && !g_humidity_icon_png.empty()) {
+            M5.Display.drawPng(g_humidity_icon_png.data(), g_humidity_icon_png.size(), ICON_AREA_X, current_y);
+            current_y += ICON_WIDTH + ICON_SPACING;
+        }
+        if (current_flame_state && !g_flame_icon_png.empty()) {
+            M5.Display.drawPng(g_flame_icon_png.data(), g_flame_icon_png.size(), ICON_AREA_X, current_y);
+        }
+        
+        last_wind_state = current_wind_state;
+        last_humidity_state = current_humidity_state;
+        last_flame_state = current_flame_state;
+    }
 }
 
 } // namespace UI
@@ -306,6 +336,10 @@ static void readAllBackgroundBuffers() {
   M5.Display.readRect(PAC_FAN_X, PAC_FAN_Y, PAC_FAN_W, PAC_FAN_H, bg_buffer_fan);
   M5.Display.readRect(WAVE_X, WAVE_Y, WAVE_W, WAVE_H, bg_buffer_wave);
   M5.Display.readRect(GRID_ARROW_X, GRID_ARROW_Y, GRID_ARROW_W, GRID_ARROW_H, bg_buffer_grid_arrow);
+
+  // AJOUT : Capturer l'arrière-plan de la zone d'icônes
+  if (bg_buffer_icons) M5.Display.readRect(ICON_AREA_X, ICON_AREA_Y, ICON_AREA_W, ICON_AREA_H, bg_buffer_icons);
+
   if (toastVisible) toastVisible = false;
 }
 
@@ -341,27 +375,11 @@ static bool drawBackgroundFromSD(bool nightMode) {
   if (!readFileToBuffer(p, buf)) return false;
   M5.Display.drawJpg(buf.data(), buf.size());
   
-  bool shouldShowWindIcon = g_weather.valid && (g_weather.maxWindTodayKmh >= SETTINGS.wind_alert_threshold_kmh || g_weather.maxGustTodayKmh >= SETTINGS.gust_alert_threshold_kmh);
-  bool shouldShowHumidityIcon = (sensorData.studioHumidity > SETTINGS.humidity_alert_threshold);
-  bool shouldShowFlameIcon = (sensorData.temp_onduleur1 > SETTINGS.inverter_temp_alert_threshold_c || sensorData.temp_onduleur2 > SETTINGS.inverter_temp_alert_threshold_c);
-
-  int iconY = 5;
-
-  if (shouldShowWindIcon && !g_wind_icon_png.empty()) {
-    M5.Display.drawPng(g_wind_icon_png.data(), g_wind_icon_png.size(), 5, iconY);
-    iconY += 32;
-  }
-  if (shouldShowHumidityIcon && !g_humidity_icon_png.empty()) {
-    M5.Display.drawPng(g_humidity_icon_png.data(), g_humidity_icon_png.size(), 5, iconY);
-    iconY += 32;
-  }
-  if (shouldShowFlameIcon && !g_flame_icon_png.empty()) {
-    M5.Display.drawPng(g_flame_icon_png.data(), g_flame_icon_png.size(), 5, iconY);
-  }
-  
-  dispState.isWindIconOnScreen = shouldShowWindIcon;
-  dispState.isHumidityIconOnScreen = shouldShowHumidityIcon;
-  dispState.isFlameIconOnScreen = shouldShowFlameIcon;
+  // La logique de dessin des icônes est maintenant dans updateAlertIcons() pour éviter les conflits.
+  // On ne fait que mettre à jour l'état, qui sera utilisé par updateAlertIcons.
+  dispState.isWindIconOnScreen = g_weather.valid && (g_weather.maxWindTodayKmh >= SETTINGS.wind_alert_threshold_kmh || g_weather.maxGustTodayKmh >= SETTINGS.gust_alert_threshold_kmh);
+  dispState.isHumidityIconOnScreen = (sensorData.studioHumidity > SETTINGS.humidity_alert_threshold);
+  dispState.isFlameIconOnScreen = (sensorData.temp_onduleur1 > SETTINGS.inverter_temp_alert_threshold_c || sensorData.temp_onduleur2 > SETTINGS.inverter_temp_alert_threshold_c);
   return true;
 }
 

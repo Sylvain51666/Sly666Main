@@ -5,6 +5,7 @@
 #include "network.h"
 #include "utils.h"
 #include <WiFi.h>
+#include <SD.h>
 
 WebConfigServer WebServerInstance;
 
@@ -117,7 +118,26 @@ bool WebConfigServer::begin(const char* hostname) {
     request->send(404, "text/plain", "Not found");
   });
 
-  _server.begin();
+  
+  // Serve SD log file and API tails
+  _server.serveStatic("/system.log", SD, "/system.log").setCacheControl("no-store");
+  auto sendLogTail = [](AsyncWebServerRequest* req){
+      if (!SD.begin()) { req->send(500, "text/plain", "SD not ready"); return; }
+      File f = SD.open("/system.log", FILE_READ);
+      if (!f) { req->send(404, "text/plain", "log not found"); return; }
+      const size_t MAX = 64 * 1024;
+      if (f.size() > MAX) f.seek(f.size() - MAX);
+      auto* res = req->beginResponseStream("text/plain");
+      res->addHeader("Cache-Control", "no-store");
+      while (f.available()) { res->write((uint8_t)f.read()); delay(0); }
+      f.close();
+      req->send(res);
+  };
+  _server.on("/api/log", HTTP_GET, sendLogTail);
+  _server.on("/api/log/tail", HTTP_GET, sendLogTail);
+  _server.on("/log", HTTP_GET, sendLogTail);
+  _server.on("/logs/tail", HTTP_GET, sendLogTail);
+_server.begin();
   _running = true;
   return true;
 }

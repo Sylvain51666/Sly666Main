@@ -285,3 +285,17 @@ loadSettings().catch(e=> notify(false, e.message));
 
 fetchAndRenderDebugInfo();
 setInterval(fetchAndRenderDebugInfo, 3000);
+async function fetchLogTail(){
+  try{
+    const res = await fetch('/api/log');
+    if(!res.ok){ return; }
+    const txt = await res.text();
+    const pre = document.getElementById('log-tail');
+    if (pre){
+      pre.textContent = txt.trim();
+      pre.scrollTop = pre.scrollHeight;
+    }
+  }catch(e){ /* ignore */ }
+}
+setInterval(fetchLogTail, 4000);
+fetchLogTail();

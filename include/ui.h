@@ -12,9 +12,7 @@ namespace UI {
     void updateAnimations();
     
     // Fonctions de gestion des icônes d'alerte
-    void manageWeatherIcon();
-    void manageHumidityIcon();
-    void manageFlameIcon();
+    void updateAlertIcons();
 
     // Fonctions de gestion des entrées utilisateur
     void handleInput();
