@@ -257,8 +257,8 @@ void loop() {
     }
     if (M5.BtnB.wasPressed()) {
         logInfo("BtnB back to dashboard");
-        // MODIFICATION: Utilisation de la nouvelle structure de données
         dispState.currentScreen = Screen::SCREEN_DASHBOARD;
+        dispState.needsRedraw = true; // MODIFIÉ : Forcer le rafraîchissement de l'écran principal
         return;
     }
     if (M5.BtnC.wasPressed()) {

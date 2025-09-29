@@ -36,7 +36,7 @@ constexpr const char* INVOICES_BASE_DIR = "/invoices";
 constexpr const char* DAILY_JSON_DIR = "/invoices/daily_json";
 constexpr const char* ARCHIVE_DIR = "/invoices/archive";
 constexpr const char* DEBUG_DATA_FILE = "/invoices/debug.json";
-constexpr const char* MISSING_DAYS_FILE = "/invoices/missing_days.json"; 
+constexpr const char* MISSING_DAYS_FILE = "/invoices/missing_days.json";
 constexpr const char* LAST_FETCH_DAY_FILE = "/invoices/last_fetch_day.txt";
 constexpr int HC_END_HOUR = 8;
 constexpr int HC_END_MINUTE = 0;
@@ -47,13 +47,13 @@ constexpr double DEFAULT_ABO_MOIS = 21.69;
 constexpr int DEFAULT_BILLING_DAY = 24;
 
 
-// --- UI LAYOUT & FONTS (inchangé) ---
+// --- UI LAYOUT & FONTS ---
 #define FONT_MAISON     7
 #define FONT_EAU        4
 #define FONT_GRID       4
 #define FONT_PISCINE    4
 #define FONT_PAC        2
-#define FONT_PV         4
+#define FONT_PV         2
 #define FONT_HEURE      2
 #define HEURE_DISP_X 290
 #define HEURE_DISP_Y 10
@@ -63,10 +63,10 @@ constexpr int DEFAULT_BILLING_DAY = 24;
 #define MAISON_DISP_Y 30
 #define MAISON_DISP_W 150
 #define MAISON_DISP_H 60
-#define PV_DISP_X 60
-#define PV_DISP_Y 45
-#define PV_DISP_W 100
-#define PV_DISP_H 40
+#define PV_DISP_X 59      // MODIFIÉ: Centre X du rectangle (28 + 62/2)
+#define PV_DISP_Y 48      // MODIFIÉ: Centre Y du rectangle (37 + 23/2)
+#define PV_DISP_W 62      // MODIFIÉ: Largeur du rectangle
+#define PV_DISP_H 23      // MODIFIÉ: Hauteur du rectangle
 #define GRID_DISP_X 180
 #define GRID_DISP_Y 128
 #define GRID_DISP_W 100

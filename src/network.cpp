@@ -4,7 +4,7 @@
 #include "state.h"
 #include "data_logging.h"
 #include "utils.h"
-#include "boot_ui.h" // Ajout pour utiliser directement le module de boot
+#include "boot_ui.h"
 #include "invoices_store.h"
 #include "settings.h"
 #include <WiFi.h>
@@ -72,7 +72,6 @@ namespace Network {
         if (mqttClient.connect(MQTT_CLIENT_ID, MQTT_USER, MQTT_PASS)) {
             DataLogging::writeLog(LogLevel::LOG_INFO, "MQTT connected");
             
-            // Abonnements aux topics
             mqttClient.subscribe(SETTINGS.topic_piscine.c_str());
             mqttClient.subscribe(SETTINGS.topic_eau.c_str());
             mqttClient.subscribe(SETTINGS.topic_heure.c_str());
@@ -112,20 +111,39 @@ namespace Network {
 } // namespace Network
 
 
-static void handlePoolTopics(const char* payloadStr) {
-    float temp = NAN, pac_val = NAN;
-    int items = sscanf(payloadStr, "%f/%f", &temp, &pac_val);
-    if (items >= 1 && Utils::isValidTemperature(temp, "piscine")) {
-        sensorData.piscine_temp = Utils::formatTemperature(temp);
+// VERSION CORRIGÉE : Remplacement complet de la fonction pour une meilleure robustesse
+static void handlePoolTopics(const char* payloadCStr) {
+    String payloadStr(payloadCStr);
+    DataLogging::writeLog(LogLevel::LOG_DEBUG, "[Network] handlePoolTopics received payload: '" + payloadStr + "'");
+
+    // Extraction de la température de la piscine (tout ce qui est avant le '/')
+    int slashIndex = payloadStr.indexOf('/');
+    String tempPiscineStr = (slashIndex != -1) ? payloadStr.substring(0, slashIndex) : payloadStr;
+    float tempPiscine = tempPiscineStr.toFloat();
+    
+    if (Utils::isValidTemperature(tempPiscine, "piscine")) {
+        sensorData.piscine_temp = Utils::formatTemperature(tempPiscine);
     }
-    sensorData.pac_value_float = NAN;
-    if (items >= 2 && Utils::isValidTemperature(pac_val, "pac")) {
-        sensorData.pac_value_float = pac_val;
-        sensorData.pac_temp = Utils::formatTemperature(pac_val);
+
+    // Extraction de la valeur de la PAC (tout ce qui est après le '/')
+    sensorData.pac_value_float = NAN; // Reset
+    if (slashIndex != -1) {
+        String pacValStr = payloadStr.substring(slashIndex + 1);
+        float pac_val = pacValStr.toFloat();
+
+        if (Utils::isValidTemperature(pac_val, "pac")) {
+            sensorData.pac_value_float = pac_val;
+            sensorData.pac_temp = Utils::formatTemperature(pac_val);
+            DataLogging::writeLog(LogLevel::LOG_DEBUG, "[Network] Stored pac_value_float: " + String(sensorData.pac_value_float, 2));
+        } else {
+             DataLogging::writeLog(LogLevel::LOG_WARN, "[Network] PAC value not stored: isValidTemperature check failed for '" + pacValStr + "'");
+        }
     } else {
-        sensorData.pac_temp = "";
+        DataLogging::writeLog(LogLevel::LOG_WARN, "[Network] PAC value not stored: separator '/' not found in payload.");
     }
 }
+
+
 static void handleWaterTopics(const char* topic, const char* payloadStr) {
     if (String(topic) == SETTINGS.topic_eau) {
         int litres = atoi(payloadStr);

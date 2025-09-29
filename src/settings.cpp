@@ -1,4 +1,5 @@
 #include "settings.h"
+#include "data_logging.h" // AJOUT LOG: Nécessaire pour pouvoir écrire dans les logs
 
 SettingsManager Settings;
 AppSettings& SETTINGS = *const_cast<AppSettings*>(&Settings.get());
@@ -53,12 +54,23 @@ bool SettingsManager::load() {
     };
 
     File f = _fs->open(_path, FILE_READ);
-    if (!f) { return save(); }
+    if (!f) {
+      // AJOUT LOG: On note que le fichier de config n'a pas été trouvé
+      DataLogging::writeLog(LogLevel::LOG_WARN, "[Settings] config.json not found. Saving default values.");
+      return save();
+    }
 
     JsonDocument doc;
-    if (deserializeJson(doc, f) != DeserializationError::Ok) {
+    DeserializationError error = deserializeJson(doc, f);
+    if (error) {
         f.close();
+        // AJOUT LOG: On note que le JSON est invalide
+        String logMsg = "[Settings] JSON error: " + String(error.c_str()) + ". Using default values.";
+        DataLogging::writeLog(LogLevel::LOG_ERROR, logMsg);
         Serial.println(F("[Settings] Erreur JSON, valeurs par défaut utilisées."));
+        // AJOUT LOG: On écrit quand même les valeurs qui seront utilisées (les valeurs par défaut)
+        String pac_settings_log = "[Settings] PAC thresholds in use (defaults): min=" + String(_settings.pac_min_temp_c, 2) + ", max=" + String(_settings.pac_max_temp_c, 2);
+        DataLogging::writeLog(LogLevel::LOG_INFO, pac_settings_log);
         return false;
     }
     f.close();
@@ -108,6 +120,11 @@ bool SettingsManager::load() {
     #undef LOAD_SETTING
 
     _loaded = true;
+
+    // AJOUT LOG: On écrit les valeurs de la PAC qui ont été chargées au final
+    String pac_settings_log = "[Settings] PAC thresholds loaded from file: min=" + String(_settings.pac_min_temp_c, 2) + ", max=" + String(_settings.pac_max_temp_c, 2);
+    DataLogging::writeLog(LogLevel::LOG_INFO, pac_settings_log);
+
     return true;
 }
 

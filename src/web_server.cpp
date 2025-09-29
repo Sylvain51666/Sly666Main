@@ -1,5 +1,7 @@
 #include "web_server.h"
 #include "state.h"
+#include "data_logging.h"
+#include "invoices_debug.h"
 #include "network.h"
 #include "utils.h"
 #include <WiFi.h>
@@ -12,12 +14,64 @@ void generateDebugJson(JsonDocument& doc) {
     system["uptime_min"] = (millis() - sysState.bootTime) / 60000;
     system["free_ram_kb"] = ESP.getFreeHeap() / 1024;
     system["brightness"] = M5.Display.getBrightness();
+    if (g_solarTimes.isValid) {
+        char srBuf[6], ssBuf[6];
+        snprintf(srBuf, sizeof(srBuf), "%d:%02d", g_solarTimes.sunriseHour, g_solarTimes.sunriseMinute);
+        snprintf(ssBuf, sizeof(ssBuf), "%d:%02d", g_solarTimes.sunsetHour, g_solarTimes.sunsetMinute);
+        system["sunrise"] = srBuf;
+        system["sunset"] = ssBuf;
+    }
 
     JsonObject network = doc["network"].to<JsonObject>();
     network["wifi_connected"] = WiFi.isConnected();
-    network["wifi_rssi"] = WiFi.RSSI();
-}
+    network["wifi_rssi_dbm"] = WiFi.RSSI();
+    network["ip_address"] = WiFi.localIP().toString();
+    network["mqtt_connected"] = Network::mqttClient.connected();
+    network["last_data_sec_ago"] = (millis() - sysState.lastDataReceived) / 1000;
 
+    JsonObject power = doc["power"].to<JsonObject>();
+    power["maison_w"] = powerData.maison_watts;
+    power["pv_w"] = powerData.pv_watts;
+    power["grid_w"] = powerData.grid_watts;
+    power["talon_power"] = powerData.talon_power;
+    int autoconsommation_pct_val = -1;
+    if (sscanf(powerData.autoconsommation.c_str(), "%d %%", &autoconsommation_pct_val) == 1) {
+        if (autoconsommation_pct_val >= 0 && autoconsommation_pct_val <= 100) {
+            power["autoconsommation_pct"] = autoconsommation_pct_val;
+        }
+    }
+    power["autoconsommation_str"] = powerData.autoconsommation;
+    if (g_powerStats.sampleCount > 0) {
+        power["maison_min_w"] = String(g_powerStats.minPower, 0);
+        power["maison_max_w"] = String(g_powerStats.maxPower, 0);
+        power["maison_avg_w"] = String(g_powerStats.avgPower, 0);
+    }
+
+    JsonObject water = doc["water"].to<JsonObject>();
+    water["current_litres"] = sensorData.eau_litres;
+    water["talon_water"] = sensorData.talon_water;
+    if(g_waterStats.dataLoaded) {
+        water["yesterday_l"] = g_waterStats.yesterday;
+        water["avg_7d_l"] = g_waterStats.avg7d;
+        water["avg_30d_l"] = g_waterStats.avg30d;
+    }
+
+    JsonObject weather = doc["weather"].to<JsonObject>();
+    if(g_weather.valid) {
+        weather["current_wind_kmh"] = String(g_weather.currentWindKmh, 1);
+        weather["max_wind_today_kmh"] = String(g_weather.maxWindTodayKmh, 1);
+        weather["max_gust_today_kmh"] = String(g_weather.maxGustTodayKmh, 1);
+    }
+    weather["last_http_code"] = g_weather.lastHttpCode;
+    
+    JsonObject inverter = doc["inverter"].to<JsonObject>();
+    inverter["temp1_c"] = sensorData.temp_onduleur1;
+    inverter["temp2_c"] = sensorData.temp_onduleur2;
+
+    String invoiceReport;
+    InvoicesDebug::generate_report(invoiceReport);
+    doc["invoices_report"] = invoiceReport;
+}
 
 WebConfigServer::WebConfigServer(uint16_t port) : _server(port) {}
 
@@ -46,12 +100,13 @@ bool WebConfigServer::begin(const char* hostname) {
   
   _server.on("/api/debug", HTTP_GET, [](AsyncWebServerRequest* req){
       JsonDocument doc;
+      DataLogging::loadWaterData();
       generateDebugJson(doc);
       String body;
       serializeJson(doc, body);
       AsyncWebServerResponse* res = req->beginResponse(200, "application/json", body);
       res->addHeader("Cache-Control", "no-store");
-      res->addHeader("Access-Control-Allow-Origin", "*");
+      res->addHeader("Access-control-Allow-Origin", "*");
       req->send(res);
   });
 
@@ -78,6 +133,7 @@ void WebConfigServer::handleGetSettings(AsyncWebServerRequest* req) {
   req->send(res);
 }
 
+// MODIFIÉ : Remplacement complet de la fonction pour la rendre plus stable
 void WebConfigServer::handlePostSettings(AsyncWebServerRequest* req, uint8_t* data, size_t len, size_t index, size_t total) {
   static String body;
   if (index == 0) body = "";
@@ -89,10 +145,23 @@ void WebConfigServer::handlePostSettings(AsyncWebServerRequest* req, uint8_t* da
       req->send(400, "application/json", "{\"error\":\"invalid_json\"}");
       return;
     }
-    Settings.updateFromJson(patch, true);
+    
+    // On met à jour les paramètres en mémoire, mais sans sauvegarder tout de suite (le 'false')
+    Settings.updateFromJson(patch, false); 
+    
+    // On crée une tâche séparée qui s'occupera de la sauvegarde sur la carte SD.
+    // Cela évite de bloquer le serveur web et de causer un crash.
+    xTaskCreate([](void*){
+        DataLogging::writeLog(LogLevel::LOG_INFO, "[WebServer] Deferring settings save to a new task.");
+        Settings.save();
+        DataLogging::writeLog(LogLevel::LOG_INFO, "[WebServer] Settings save task complete.");
+        vTaskDelete(NULL); // La tâche se supprime elle-même une fois terminée
+    }, "saveTask", 4096, NULL, 1, NULL);
+
     handleGetSettings(req);
   }
 }
+
 
 void WebConfigServer::handleReboot(AsyncWebServerRequest* req) {
   req->send(200, "application/json", "{\"status\":\"rebooting\"}");

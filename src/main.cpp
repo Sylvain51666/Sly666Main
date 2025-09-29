@@ -20,7 +20,7 @@
 #include "sonometer_screen.h"
 #include "boot_ui.h"
 
-constexpr const char* APP_VERSION = "v28.0"; // Version mise à jour
+constexpr const char* APP_VERSION = "v28.2"; // Version mise à jour
 
 SystemState sysState;
 DisplayState dispState;
