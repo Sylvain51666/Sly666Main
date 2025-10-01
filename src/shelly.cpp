@@ -17,33 +17,41 @@ extern TaskHandle_t g_shellyTaskHandle;
 
 void shellyTask(void* arg) {
     uint32_t lastPoll = 0;
+    
     for (;;) {
         if (!WiFi.isConnected()) {
             vTaskDelay(pdMS_TO_TICKS(500));
             continue;
         }
+
         if (millis() - lastPoll < SHELLY_POLL_MS) {
             vTaskDelay(pdMS_TO_TICKS(20));
             continue;
         }
-        lastPoll = millis();
 
+        lastPoll = millis();
         HTTPClient http;
         String url = String("http://") + SHELLY_HOST + "/rpc/Shelly.GetStatus";
+        
         if (!http.begin(url)) {
             vTaskDelay(pdMS_TO_TICKS(200));
             continue;
         }
-        http.setTimeout(700);
+
+        // OPTIMISATION: Timeout réduit de 700ms à 400ms pour réduire les blocages
+        http.setTimeout(400);
         int code = http.GET();
+        
         if (code == 200) {
             JsonDocument filter;
             filter["em1:0"]["act_power"] = true;
             filter["em1:1"]["act_power"] = true;
             JsonDocument doc;
+            
             if (deserializeJson(doc, http.getStream(), DeserializationOption::Filter(filter)) == DeserializationError::Ok) {
                 float m = doc["em1:0"]["act_power"] | NAN;
                 float p = doc["em1:1"]["act_power"] | NAN;
+                
                 portENTER_CRITICAL(&g_shellyMux);
                 g_rawMaisonW = m;
                 g_rawPVW = p;
@@ -51,6 +59,7 @@ void shellyTask(void* arg) {
                 portEXIT_CRITICAL(&g_shellyMux);
             }
         }
+        
         http.end();
         vTaskDelay(pdMS_TO_TICKS(10));
     }
@@ -66,7 +75,7 @@ void startTask() {
         nullptr,
         1,
         &g_shellyTaskHandle,
-        0
+        0  // Core 0 pour Shelly
     );
 }
 

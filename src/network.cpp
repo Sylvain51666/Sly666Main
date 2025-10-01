@@ -111,11 +111,10 @@ namespace Network {
 } // namespace Network
 
 
-// VERSION CORRIGÉE : Remplacement complet de la fonction pour une meilleure robustesse
+// VERSION CORRIGÉE : Suppression des logs debug PAC, conservation des logs utiles
 static void handlePoolTopics(const char* payloadCStr) {
     String payloadStr(payloadCStr);
-    DataLogging::writeLog(LogLevel::LOG_DEBUG, "[Network] handlePoolTopics received payload: '" + payloadStr + "'");
-
+    
     // Extraction de la température de la piscine (tout ce qui est avant le '/')
     int slashIndex = payloadStr.indexOf('/');
     String tempPiscineStr = (slashIndex != -1) ? payloadStr.substring(0, slashIndex) : payloadStr;
@@ -126,20 +125,20 @@ static void handlePoolTopics(const char* payloadCStr) {
     }
 
     // Extraction de la valeur de la PAC (tout ce qui est après le '/')
-    sensorData.pac_value_float = NAN; // Reset
+    sensorData.pac_value_float = NAN;
     if (slashIndex != -1) {
         String pacValStr = payloadStr.substring(slashIndex + 1);
         float pac_val = pacValStr.toFloat();
-
+        
         if (Utils::isValidTemperature(pac_val, "pac")) {
             sensorData.pac_value_float = pac_val;
             sensorData.pac_temp = Utils::formatTemperature(pac_val);
-            DataLogging::writeLog(LogLevel::LOG_DEBUG, "[Network] Stored pac_value_float: " + String(sensorData.pac_value_float, 2));
+            // LOG SUPPRIMÉ : pas besoin de logger chaque valeur PAC
         } else {
-             DataLogging::writeLog(LogLevel::LOG_WARN, "[Network] PAC value not stored: isValidTemperature check failed for '" + pacValStr + "'");
+            DataLogging::writeLog(LogLevel::LOG_WARN, "[Network] PAC value rejected: '" + pacValStr + "'");
         }
     } else {
-        DataLogging::writeLog(LogLevel::LOG_WARN, "[Network] PAC value not stored: separator '/' not found in payload.");
+        DataLogging::writeLog(LogLevel::LOG_WARN, "[Network] PAC separator '/' not found in: '" + payloadStr + "'");
     }
 }
 
