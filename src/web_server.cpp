@@ -4,7 +4,7 @@
 #include "invoices_debug.h"
 #include "network.h"
 #include "utils.h"
-#include <WiFi.h>
+#include <ArduinoJson.h>
 
 WebConfigServer WebServerInstance;
 
@@ -13,7 +13,7 @@ void generateDebugJson(JsonDocument& doc) {
     system["uptime_min"] = (millis() - sysState.bootTime) / 60000;
     system["free_ram_kb"] = ESP.getFreeHeap() / 1024;
     system["brightness"] = M5.Display.getBrightness();
-    
+
     if (g_solarTimes.isValid) {
         char srBuf[6], ssBuf[6];
         snprintf(srBuf, sizeof(srBuf), "%d:%02d", g_solarTimes.sunriseHour, g_solarTimes.sunriseMinute);
@@ -34,7 +34,7 @@ void generateDebugJson(JsonDocument& doc) {
     power["pv_w"] = powerData.pv_watts;
     power["grid_w"] = powerData.grid_watts;
     power["talon_power"] = powerData.talon_power;
-    
+
     int autoconsommation_pct_val = -1;
     if (sscanf(powerData.autoconsommation.c_str(), "%d %%", &autoconsommation_pct_val) == 1) {
         if (autoconsommation_pct_val >= 0 && autoconsommation_pct_val <= 100) {
@@ -42,7 +42,7 @@ void generateDebugJson(JsonDocument& doc) {
         }
     }
     power["autoconsommation_str"] = powerData.autoconsommation;
-    
+
     if (g_powerStats.sampleCount > 0) {
         power["maison_min_w"] = String(g_powerStats.minPower, 0);
         power["maison_max_w"] = String(g_powerStats.maxPower, 0);
@@ -52,14 +52,14 @@ void generateDebugJson(JsonDocument& doc) {
     JsonObject water = doc["water"].to<JsonObject>();
     water["current_litres"] = sensorData.eau_litres;
     water["talon_water"] = sensorData.talon_water;
-    if(g_waterStats.dataLoaded) {
+    if (g_waterStats.dataLoaded) {
         water["yesterday_l"] = g_waterStats.yesterday;
         water["avg_7d_l"] = g_waterStats.avg7d;
         water["avg_30d_l"] = g_waterStats.avg30d;
     }
 
     JsonObject weather = doc["weather"].to<JsonObject>();
-    if(g_weather.valid) {
+    if (g_weather.valid) {
         weather["current_wind_kmh"] = String(g_weather.currentWindKmh, 1);
         weather["max_wind_today_kmh"] = String(g_weather.maxWindTodayKmh, 1);
         weather["max_gust_today_kmh"] = String(g_weather.maxGustTodayKmh, 1);
@@ -87,14 +87,16 @@ bool WebConfigServer::begin(const char* hostname) {
     }
 
     _server.serveStatic("/", SPIFFS, "/").setDefaultFile("index.html").setCacheControl("max-age=3600");
-    
+
     _server.on("/api/settings", HTTP_GET, std::bind(&WebConfigServer::handleGetSettings, this, std::placeholders::_1));
-    
+
     _server.on(
-        "/api/settings", HTTP_POST, [](AsyncWebServerRequest* req){}, nullptr,
+        "/api/settings", HTTP_POST, 
+        [](AsyncWebServerRequest* req){}, 
+        nullptr,
         std::bind(&WebConfigServer::handlePostSettings, this, std::placeholders::_1, std::placeholders::_2, std::placeholders::_3, std::placeholders::_4, std::placeholders::_5)
     );
-    
+
     _server.on("/api/settings", HTTP_OPTIONS, [](AsyncWebServerRequest* req){
         AsyncWebServerResponse* res = req->beginResponse(204);
         res->addHeader("Access-Control-Allow-Origin", "*");
@@ -111,7 +113,7 @@ bool WebConfigServer::begin(const char* hostname) {
         serializeJson(doc, body);
         AsyncWebServerResponse* res = req->beginResponse(200, "application/json", body);
         res->addHeader("Cache-Control", "no-store");
-        res->addHeader("Access-control-Allow-Origin", "*");
+        res->addHeader("Access-Control-Allow-Origin", "*");
         req->send(res);
     });
 
@@ -126,7 +128,9 @@ bool WebConfigServer::begin(const char* hostname) {
     return true;
 }
 
-bool WebConfigServer::isRunning() const { return _running; }
+bool WebConfigServer::isRunning() const {
+    return _running;
+}
 
 void WebConfigServer::handleGetSettings(AsyncWebServerRequest* req) {
     JsonDocument doc;
@@ -139,28 +143,58 @@ void WebConfigServer::handleGetSettings(AsyncWebServerRequest* req) {
     req->send(res);
 }
 
-// CORRECTION MAJEURE : Sauvegarde synchrone pour éviter les corruptions
+// ============================== CORRECTION #1: RACE CONDITION ==============================
+// Fix de la race condition sur static String body
 void WebConfigServer::handlePostSettings(AsyncWebServerRequest* req, uint8_t* data, size_t len, size_t index, size_t total) {
-    static String body;
+    // AVANT: static String body; (DANGEREUX avec requêtes concurrentes)
+    // APRÈS: Utilisation du pointeur _tempObject de la requête
     
-    if (index == 0) body = "";
-    body.concat((const char*)data, len);
+    String* body = nullptr;
     
+    if (index == 0) {
+        // Première chunk: créer le buffer
+        body = new String();
+        body->reserve(total); // Pré-allouer pour éviter les réallocations
+        req->_tempObject = (void*)body;
+    } else {
+        // Chunks suivantes: récupérer le buffer existant
+        body = (String*)req->_tempObject;
+    }
+    
+    // Vérification de sécurité
+    if (!body) {
+        DataLogging::writeLog(LogLevel::LOG_ERROR, "[WebServer] POST body pointer is null");
+        req->send(500, "application/json", "{\"error\":\"internal_error\"}");
+        return;
+    }
+    
+    // Accumuler les données
+    body->concat((const char*)data, len);
+    
+    // Traitement final quand toutes les chunks sont reçues
     if (index + len == total) {
         JsonDocument patch;
-        if (deserializeJson(patch, body) != DeserializationError::Ok) {
+        DeserializationError err = deserializeJson(patch, *body);
+        
+        if (err != DeserializationError::Ok) {
+            DataLogging::writeLog(LogLevel::LOG_ERROR, String("[WebServer] JSON parse error: ") + err.c_str());
+            delete body;
+            req->_tempObject = nullptr;
             req->send(400, "application/json", "{\"error\":\"invalid_json\"}");
             return;
         }
-
-        // Mise à jour en mémoire ET sauvegarde immédiate de manière synchrone
+        
+        // ============================== CORRECTION #5: SUPPRESSION DELAY ==============================
+        // Mise à jour synchrone (Settings.save() est déjà synchrone)
         DataLogging::writeLog(LogLevel::LOG_INFO, "[WebServer] Updating settings from web interface");
-        Settings.updateFromJson(patch, true);  // true = save immédiatement
+        Settings.updateFromJson(patch, true); // true = save immédiatement
         DataLogging::writeLog(LogLevel::LOG_INFO, "[WebServer] Settings saved successfully");
         
-        // Petit délai pour s'assurer que la SD a fini d'écrire
-        delay(100);
+        // Nettoyage mémoire
+        delete body;
+        req->_tempObject = nullptr;
         
+        // Renvoyer les settings mis à jour
         handleGetSettings(req);
     }
 }

@@ -1,9 +1,10 @@
-#include <M5Unified.h>
 #include <WiFi.h>
+#include <time.h>
 #include <SD.h>
 #include <SPIFFS.h>
 #include <vector>
-#include <esp_random.h>
+#include <deque>
+
 #include "config.h"
 #include "state.h"
 #include "ui.h"
@@ -19,8 +20,9 @@
 #include "sonometer_screen.h"
 #include "boot_ui.h"
 
-constexpr const char* APP_VERSION = "v28.4";
+constexpr const char* APP_VERSION = "v29.0";
 
+// ============================== VARIABLES GLOBALES ==============================
 SystemState sysState;
 DisplayState dispState;
 PowerData powerData;
@@ -31,6 +33,7 @@ PowerStats g_powerStats;
 WaterStats g_waterStats;
 InvoiceParams g_invoiceParams;
 InvoiceData g_invoiceData;
+
 std::vector<uint8_t> g_wind_icon_png;
 std::vector<uint8_t> g_humidity_icon_png;
 std::vector<uint8_t> g_flame_icon_png;
@@ -38,13 +41,18 @@ std::vector<uint8_t> g_flame_icon_png;
 volatile float g_rawMaisonW = NAN, g_rawPVW = NAN;
 volatile bool g_hasNewShelly = false;
 portMUX_TYPE g_shellyMux = portMUX_INITIALIZER_UNLOCKED;
+
 TaskHandle_t g_shellyTaskHandle = nullptr;
 TaskHandle_t g_backgroundTaskHandle = nullptr;
+
+// CORRECTION #2: Mutex pour protéger les accès SD
+SemaphoreHandle_t g_sdMutex = nullptr;
 
 static bool timeIsSet = false;
 static bool invoicesIsInitialized = false;
 static bool boot_complete = false;
 
+// ============================== PROTOTYPES ==============================
 void setState(SystemStateType newState);
 void checkSystemHealth();
 void handleNtpConnection();
@@ -54,6 +62,7 @@ void saveLastJobDay(const struct tm& timeinfo);
 void drawMainDashboard();
 void backgroundTask(void* arg);
 
+// ============================== SETUP ==============================
 void setup() {
     Serial.begin(115200);
     auto cfg = M5.config();
@@ -61,9 +70,11 @@ void setup() {
 
     const int TOTAL_BOOT_STEPS = 14;
     int current_step = 0;
+
     BootUI::begin();
     BootUI::drawVersion(APP_VERSION);
 
+    // SPIFFS
     BootUI::setStep(++current_step, TOTAL_BOOT_STEPS, "Systeme Fichiers (SPIFFS)");
     if (!SPIFFS.begin(true)) {
         M5.Display.fillScreen(TFT_RED);
@@ -71,6 +82,7 @@ void setup() {
         while(true) delay(1000);
     }
 
+    // SD Card
     BootUI::setStep(++current_step, TOTAL_BOOT_STEPS, "Systeme Fichiers (SD)");
     if (!SD.begin(4)) {
         M5.Display.fillScreen(TFT_RED);
@@ -78,6 +90,15 @@ void setup() {
         while (true) delay(1000);
     }
 
+    // CORRECTION #2: Création du mutex SD
+    g_sdMutex = xSemaphoreCreateMutex();
+    if (g_sdMutex == nullptr) {
+        M5.Display.fillScreen(TFT_RED);
+        M5.Display.drawString("SD Mutex Creation Failed", 160, 120);
+        while (true) delay(1000);
+    }
+
+    // Configuration
     BootUI::setStep(++current_step, TOTAL_BOOT_STEPS, "Chargement Configuration");
     if (!Settings.begin(SD, "/config.json")) {
         BootUI::setProgress((current_step * 100 / TOTAL_BOOT_STEPS), "config.json cree");
@@ -90,12 +111,14 @@ void setup() {
         }
     });
 
+    // Logs
     BootUI::setStep(++current_step, TOTAL_BOOT_STEPS, "Initialisation Logs");
     DataLogging::init();
-    DataLogging::writeLog(LogLevel::LOG_INFO, String("=== SYSTEM BOOT ===") + APP_VERSION);
+    DataLogging::writeLog(LogLevel::LOG_INFO, String("=== SYSTEM BOOT === ") + APP_VERSION);
     sysState.bootTime = millis();
     randomSeed(esp_random());
 
+    // WiFi
     BootUI::setStep(++current_step, TOTAL_BOOT_STEPS, "Connexion WiFi...");
     WiFi.onEvent([](WiFiEvent_t event, WiFiEventInfo_t info){
         if (event == ARDUINO_EVENT_WIFI_STA_GOT_IP) {
@@ -105,6 +128,7 @@ void setup() {
     });
     Network::init();
 
+    // Web Server
     BootUI::setStep(++current_step, TOTAL_BOOT_STEPS, "Serveur Web...");
     bool webOk = WebServerInstance.begin("m5core2");
     if (webOk) {
@@ -115,6 +139,7 @@ void setup() {
         BootUI::setStep(current_step, TOTAL_BOOT_STEPS, "[WARNING] Web Server failed, continuing...");
     }
 
+    // NTP
     BootUI::setStep(++current_step, TOTAL_BOOT_STEPS, "Synchronisation Heure (NTP)");
     struct tm timeinfo;
     if (WiFi.isConnected()) {
@@ -122,6 +147,7 @@ void setup() {
         if (getLocalTime(&timeinfo, 5000)) timeIsSet = true;
     }
 
+    // MQTT
     BootUI::setStep(++current_step, TOTAL_BOOT_STEPS, "Connexion MQTT...");
     Network::connectMqtt();
 
@@ -133,6 +159,7 @@ void setup() {
         current_step++;
     }
 
+    // Invoices
     BootUI::setStep(++current_step, TOTAL_BOOT_STEPS, "Initialisation Factures");
     InvoicesStore::init();
     loadLastJobDay();
@@ -141,6 +168,7 @@ void setup() {
     invoicesIsInitialized = true;
     DataLogging::writeLog(LogLevel::LOG_INFO, "Invoices data processed.");
 
+    // Weather
     BootUI::setStep(++current_step, TOTAL_BOOT_STEPS, "Recuperation Meteo");
     bool weatherOk = Weather::fetch();
     if (!weatherOk) {
@@ -148,13 +176,14 @@ void setup() {
         Serial.println("[ERROR] Weather fetch failed, continuing...");
     }
 
+    // UI
     BootUI::setStep(++current_step, TOTAL_BOOT_STEPS, "Chargement Interface");
     UI::init();
 
+    // Background tasks
     BootUI::setStep(++current_step, TOTAL_BOOT_STEPS, "Lancement Taches de Fond");
     Shelly::startTask();
     
-    // NOUVEAU: Tâche de fond pour opérations lourdes
     xTaskCreatePinnedToCore(
         backgroundTask,
         "BackgroundOps",
@@ -173,6 +202,7 @@ void setup() {
     drawMainDashboard();
 }
 
+// ============================== FONCTIONS UTILITAIRES ==============================
 void drawMainDashboard() {
     dispState.needsRedraw = true;
     UI::applyModeChangeNow();
@@ -197,21 +227,27 @@ void handleNtpConnection() {
 }
 
 void loadLastJobDay() {
-    File f = SD.open(LAST_FETCH_DAY_FILE);
-    if (f && f.size() > 0) {
-        sysState.lastInvoiceJobDayOfYear = f.parseInt();
-    } else {
-        sysState.lastInvoiceJobDayOfYear = -1;
+    if (xSemaphoreTake(g_sdMutex, pdMS_TO_TICKS(1000)) == pdTRUE) {
+        File f = SD.open(LAST_FETCH_DAY_FILE);
+        if (f && f.size() > 0) {
+            sysState.lastInvoiceJobDayOfYear = f.parseInt();
+        } else {
+            sysState.lastInvoiceJobDayOfYear = -1;
+        }
+        if (f) f.close();
+        xSemaphoreGive(g_sdMutex);
     }
-    if (f) f.close();
 }
 
 void saveLastJobDay(const struct tm& timeinfo) {
-    File f = SD.open(LAST_FETCH_DAY_FILE, FILE_WRITE);
-    if (f) {
-        sysState.lastInvoiceJobDayOfYear = timeinfo.tm_yday;
-        f.print(sysState.lastInvoiceJobDayOfYear);
-        f.close();
+    if (xSemaphoreTake(g_sdMutex, pdMS_TO_TICKS(1000)) == pdTRUE) {
+        File f = SD.open(LAST_FETCH_DAY_FILE, FILE_WRITE);
+        if (f) {
+            sysState.lastInvoiceJobDayOfYear = timeinfo.tm_yday;
+            f.print(sysState.lastInvoiceJobDayOfYear);
+            f.close();
+        }
+        xSemaphoreGive(g_sdMutex);
     }
 }
 
@@ -248,8 +284,8 @@ void checkSystemHealth() {
         setState(SystemStateType::STATE_NO_WIFI);
     }
 
-    if (sysState.type != SystemStateType::STATE_OK && 
-        sysState.errorStateStartTime > 0 && 
+    if (sysState.type != SystemStateType::STATE_OK &&
+        sysState.errorStateStartTime > 0 &&
         millis() - sysState.errorStateStartTime > HARD_REBOOT_TIMEOUT_MS) {
         DataLogging::writeLog(LogLevel::LOG_ERROR, "In error state for 15 minutes. Rebooting...");
         DataLogging::flushLogBufferToSD();
@@ -258,46 +294,47 @@ void checkSystemHealth() {
     }
 }
 
-// NOUVELLE TÂCHE: Opérations lourdes asynchrones
+// ============================== TÂCHE DE FOND ==============================
 void backgroundTask(void* arg) {
     unsigned long lastLogFlush = 0;
     unsigned long lastLogCleanup = 0;
     unsigned long lastWeatherFetch = 0;
-    
+
     for (;;) {
         unsigned long now = millis();
-        
+
         // Flush logs de manière asynchrone
-        if (now - lastLogFlush > LOG_FLUSH_INTERVAL_MS || 
+        if (now - lastLogFlush > LOG_FLUSH_INTERVAL_MS ||
             DataLogging::getLogBufferLength() > (LOG_BUFFER_MAX_SIZE * 0.8)) {
             DataLogging::flushLogBufferToSD();
             lastLogFlush = now;
         }
-        
+
         // Cleanup logs
         if (now - lastLogCleanup > LOG_CLEANUP_INTERVAL_MS) {
             DataLogging::cleanupLogs();
             lastLogCleanup = now;
         }
-        
+
         // Weather fetch asynchrone
         if (now - lastWeatherFetch > SETTINGS.weather_refresh_interval_ms) {
             Weather::fetch();
             lastWeatherFetch = now;
         }
-        
+
         // Sauvegarde eau quotidienne
         if (invoicesIsInitialized) {
             DataLogging::saveDailyWaterConsumption();
         }
-        
-        vTaskDelay(pdMS_TO_TICKS(1000));  // Check toutes les secondes
+
+        vTaskDelay(pdMS_TO_TICKS(1000));
     }
 }
 
+// ============================== LOOP PRINCIPALE ==============================
 void loop() {
     M5.update();
-    
+
     if (!boot_complete) {
         BootUI::loop();
         return;
@@ -315,7 +352,7 @@ void loop() {
     UI::handleInput();
 
     if (dispState.currentScreen != lastScreen) {
-        if (dispState.currentScreen == Screen::SCREEN_DASHBOARD || 
+        if (dispState.currentScreen == Screen::SCREEN_DASHBOARD ||
             dispState.currentScreen == Screen::SCREEN_INVOICES) {
             dispState.needsRedraw = true;
         }
@@ -358,7 +395,7 @@ void loop() {
 
             if (timeIsSet && now - lastBrightnessCheck > BRIGHTNESS_CHECK_INTERVAL_MS) {
                 UI::updateBrightness();
-                if (dispState.currentMode == DisplayMode::MODE_AUTO && 
+                if (dispState.currentMode == DisplayMode::MODE_AUTO &&
                     UI::shouldBeNightMode() != dispState.isNightMode) {
                     dispState.needsRedraw = true;
                 }
@@ -409,7 +446,6 @@ void loop() {
             break;
     }
 
-    // CRITIQUE: Yield pour éviter watchdog
     yield();
-    delay(5);  // Réduit à 5ms au lieu de 10ms pour plus de fluidité
+    delay(5);
 }

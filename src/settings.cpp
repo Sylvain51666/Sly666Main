@@ -1,8 +1,10 @@
 #include "settings.h"
-#include "data_logging.h" // AJOUT LOG: Nécessaire pour pouvoir écrire dans les logs
+#include "data_logging.h"
 
 SettingsManager Settings;
 AppSettings& SETTINGS = *const_cast<AppSettings*>(&Settings.get());
+
+extern SemaphoreHandle_t g_sdMutex;
 
 bool SettingsManager::begin(fs::FS& fs, const char* path) {
     _fs = &fs;
@@ -11,72 +13,79 @@ bool SettingsManager::begin(fs::FS& fs, const char* path) {
 }
 
 bool SettingsManager::load() {
-    // Initialisation avec les valeurs par défaut
     _settings = AppSettings{
-      .brightness_day = 255,
-      .brightness_night = 60,
-      .wind_alert_threshold_kmh = 22.0f,
-      .gust_alert_threshold_kmh = 50.0f,
-      .weather_refresh_interval_ms = 10UL * 60UL * 1000UL,
-      .weather_url = "https://api.open-meteo.com/v1/forecast?latitude=49.21268&longitude=4.03642&current_weather=true&daily=windspeed_10m_max,windgusts_10m_max&timezone=auto&windspeed_unit=kmh",
-      .humidity_alert_threshold = 70.0f,
-      .inverter_temp_alert_threshold_c = 60.0f, // AJOUT : Valeur par défaut pour l'alerte de température
-      .daily_fetch_hour = 6,
-      .daily_fetch_minute = 30,
-      .pv_max_watts = 2630.0f,
-      .latitude = 49.212665,
-      .longitude = 4.036408,
-      .talon_start_hour = 3,
-      .talon_end_hour = 4,
-      .talon_end_minute = 30,
-      .pac_min_temp_c = 1.5f,
-      .pac_max_temp_c = 2.6f,
-      .sonometer_smoothing_factor = 0.08f,
-      .sonometer_mic_calibration_db_offset = 94.0f,
-      .topic_piscine = "homie/homey/m5core2/devicecapabilities-texttext1",
-      .topic_eau = "homie/homey/m5core2/devicecapabilities-texttext2",
-      .topic_heure = "homie/homey/m5core2/devicecapabilities-texttext4",
-      .topic_pompe_piscine = "homie/homey/pompe-de-la-piscine/onoff",
-      .topic_pompe_hr_start = "homie/homey/m5core2/devicecapabilities-texttext5",
-      .topic_pompe_hr_end = "homie/homey/m5core2/devicecapabilities-texttext6",
-      .topic_autoconsommation = "homie/homey/solar-panel/measure-devicecapabilities-number-custom-35number8",
-      .topic_prod_totale = "solar/ac/yieldtotal",
-      .topic_temp_onduleur_1 = "solar/1164a00a05d6/0/temperature",
-      .topic_temp_onduleur_2 = "solar/1410a015a55d/0/temperature",
-      .topic_talon_eau = "homie/homey/conso-eau/measure-water",
-      .topic_studio_humidity = "homie/homey/m5core2/devicecapabilities-number-custom-22number6",
-      .topic_sub_price = "homie/homey/m5core2/devicecapabilities-numbernumber1",
-      .topic_hc_price = "homie/homey/m5core2/devicecapabilities-numbernumber3",
-      .topic_bill_day = "homie/homey/m5core2/devicecapabilities-numbernumber4",
-      .topic_hp_price = "homie/homey/m5core2/devicecapabilities-numbernumber5",
-      .topic_sonometer_db = "drums/monitor/db_meter",
-      .topic_sonometer_laeq60 = "drums/monitor/laeq60"
+        .brightness_day = 255,
+        .brightness_night = 60,
+        .wind_alert_threshold_kmh = 22.0f,
+        .gust_alert_threshold_kmh = 50.0f,
+        .weather_refresh_interval_ms = 10UL * 60UL * 1000UL,
+        .weather_url = "https://api.open-meteo.com/v1/forecast?latitude=49.21268&longitude=4.03642&current_weather=true&daily=windspeed_10m_max,windgusts_10m_max&timezone=auto&windspeed_unit=kmh",
+        .humidity_alert_threshold = 70.0f,
+        .inverter_temp_alert_threshold_c = 60.0f,
+        .daily_fetch_hour = 6,
+        .daily_fetch_minute = 30,
+        .pv_max_watts = 2630.0f,
+        .latitude = 49.212665,
+        .longitude = 4.036408,
+        .talon_start_hour = 3,
+        .talon_end_hour = 4,
+        .talon_end_minute = 30,
+        .pac_min_temp_c = 1.5f,
+        .pac_max_temp_c = 2.6f,
+        .sonometer_smoothing_factor = 0.08f,
+        .sonometer_mic_calibration_db_offset = 94.0f,
+        .topic_piscine = "homie/homey/m5core2/devicecapabilities-texttext1",
+        .topic_eau = "homie/homey/m5core2/devicecapabilities-texttext2",
+        .topic_heure = "homie/homey/m5core2/devicecapabilities-texttext4",
+        .topic_pompe_piscine = "homie/homey/pompe-de-la-piscine/onoff",
+        .topic_pompe_hr_start = "homie/homey/m5core2/devicecapabilities-texttext5",
+        .topic_pompe_hr_end = "homie/homey/m5core2/devicecapabilities-texttext6",
+        .topic_autoconsommation = "homie/homey/solar-panel/measure-devicecapabilities-number-custom-35number8",
+        .topic_prod_totale = "solar/ac/yieldtotal",
+        .topic_temp_onduleur_1 = "solar/1164a00a05d6/0/temperature",
+        .topic_temp_onduleur_2 = "solar/1410a015a55d/0/temperature",
+        .topic_talon_eau = "homie/homey/conso-eau/measure-water",
+        .topic_studio_humidity = "homie/homey/m5core2/devicecapabilities-number-custom-22number6",
+        .topic_sub_price = "homie/homey/m5core2/devicecapabilities-numbernumber1",
+        .topic_hc_price = "homie/homey/m5core2/devicecapabilities-numbernumber3",
+        .topic_bill_day = "homie/homey/m5core2/devicecapabilities-numbernumber4",
+        .topic_hp_price = "homie/homey/m5core2/devicecapabilities-numbernumber5",
+        .topic_sonometer_db = "drums/monitor/db_meter",
+        .topic_sonometer_laeq60 = "drums/monitor/laeq60"
     };
 
-    File f = _fs->open(_path, FILE_READ);
+    File f;
+    if (xSemaphoreTake(g_sdMutex, pdMS_TO_TICKS(2000)) == pdTRUE) {
+        f = _fs->open(_path, FILE_READ);
+        xSemaphoreGive(g_sdMutex);
+    } else {
+        DataLogging::writeLog(LogLevel::LOG_ERROR, "[Settings] Failed to acquire SD mutex for load");
+        return save();
+    }
+
     if (!f) {
-      // AJOUT LOG: On note que le fichier de config n'a pas été trouvé
-      DataLogging::writeLog(LogLevel::LOG_WARN, "[Settings] config.json not found. Saving default values.");
-      return save();
+        DataLogging::writeLog(LogLevel::LOG_WARN, "[Settings] config.json not found. Saving default values.");
+        return save();
     }
 
     JsonDocument doc;
     DeserializationError error = deserializeJson(doc, f);
+    
     if (error) {
         f.close();
-        // AJOUT LOG: On note que le JSON est invalide
         String logMsg = "[Settings] JSON error: " + String(error.c_str()) + ". Using default values.";
         DataLogging::writeLog(LogLevel::LOG_ERROR, logMsg);
         Serial.println(F("[Settings] Erreur JSON, valeurs par défaut utilisées."));
-        // AJOUT LOG: On écrit quand même les valeurs qui seront utilisées (les valeurs par défaut)
         String pac_settings_log = "[Settings] PAC thresholds in use (defaults): min=" + String(_settings.pac_min_temp_c, 2) + ", max=" + String(_settings.pac_max_temp_c, 2);
         DataLogging::writeLog(LogLevel::LOG_INFO, pac_settings_log);
         return false;
     }
-    f.close();
 
+    f.close();
+    
     JsonObject o = doc.as<JsonObject>();
-    #define LOAD_SETTING(key) if(!o[#key].isNull()){_settings.key = o[#key].as<decltype(_settings.key)>();}
+    
+#define LOAD_SETTING(key) if(!o[#key].isNull()){_settings.key = o[#key].as<decltype(_settings.key)>();}
     
     LOAD_SETTING(brightness_day);
     LOAD_SETTING(brightness_night);
@@ -85,7 +94,7 @@ bool SettingsManager::load() {
     LOAD_SETTING(weather_refresh_interval_ms);
     LOAD_SETTING(weather_url);
     LOAD_SETTING(humidity_alert_threshold);
-    LOAD_SETTING(inverter_temp_alert_threshold_c); // AJOUT
+    LOAD_SETTING(inverter_temp_alert_threshold_c);
     LOAD_SETTING(daily_fetch_hour);
     LOAD_SETTING(daily_fetch_minute);
     LOAD_SETTING(pv_max_watts);
@@ -117,34 +126,41 @@ bool SettingsManager::load() {
     LOAD_SETTING(topic_sonometer_db);
     LOAD_SETTING(topic_sonometer_laeq60);
     
-    #undef LOAD_SETTING
+#undef LOAD_SETTING
 
     _loaded = true;
-
-    // AJOUT LOG: On écrit les valeurs de la PAC qui ont été chargées au final
     String pac_settings_log = "[Settings] PAC thresholds loaded from file: min=" + String(_settings.pac_min_temp_c, 2) + ", max=" + String(_settings.pac_max_temp_c, 2);
     DataLogging::writeLog(LogLevel::LOG_INFO, pac_settings_log);
-
     return true;
 }
 
 bool SettingsManager::save() {
     if (!_fs) return false;
+    
     JsonDocument doc;
     toJson(doc);
-    File f = _fs->open(_path, FILE_WRITE);
-    if (!f) {
-        Serial.println(F("[Settings] Echec ouverture fichier pour écriture."));
-        return false;
+    
+    bool success = false;
+    if (xSemaphoreTake(g_sdMutex, pdMS_TO_TICKS(2000)) == pdTRUE) {
+        File f = _fs->open(_path, FILE_WRITE);
+        if (f) {
+            success = serializeJsonPretty(doc, f) > 0;
+            f.close();
+        } else {
+            Serial.println(F("[Settings] Echec ouverture fichier pour écriture."));
+        }
+        xSemaphoreGive(g_sdMutex);
+    } else {
+        DataLogging::writeLog(LogLevel::LOG_ERROR, "[Settings] Failed to acquire SD mutex for save");
     }
-    bool success = serializeJsonPretty(doc, f) > 0;
-    f.close();
+    
     return success;
 }
 
 void SettingsManager::toJson(JsonDocument& doc) const {
     JsonObject o = doc.to<JsonObject>();
-    #define SAVE_SETTING(key) o[#key] = _settings.key
+    
+#define SAVE_SETTING(key) o[#key] = _settings.key
     
     SAVE_SETTING(brightness_day);
     SAVE_SETTING(brightness_night);
@@ -153,7 +169,7 @@ void SettingsManager::toJson(JsonDocument& doc) const {
     SAVE_SETTING(weather_refresh_interval_ms);
     SAVE_SETTING(weather_url);
     SAVE_SETTING(humidity_alert_threshold);
-    SAVE_SETTING(inverter_temp_alert_threshold_c); // AJOUT
+    SAVE_SETTING(inverter_temp_alert_threshold_c);
     SAVE_SETTING(daily_fetch_hour);
     SAVE_SETTING(daily_fetch_minute);
     SAVE_SETTING(pv_max_watts);
@@ -185,20 +201,20 @@ void SettingsManager::toJson(JsonDocument& doc) const {
     SAVE_SETTING(topic_sonometer_db);
     SAVE_SETTING(topic_sonometer_laeq60);
     
-    #undef SAVE_SETTING
+#undef SAVE_SETTING
 }
 
 bool SettingsManager::updateFromJson(const JsonDocument& patch, bool saveAfter) {
     AppSettings old = _settings;
     bool changed = false;
     JsonObjectConst p = patch.as<JsonObjectConst>();
-
-    #define UPDATE_IF(key) \
-      if (!p[#key].isNull()) { \
+    
+#define UPDATE_IF(key) \
+    if (!p[#key].isNull()) { \
         auto val = p[#key].as<decltype(_settings.key)>(); \
         if (_settings.key != val) { _settings.key = val; changed = true; } \
-      }
-      
+    }
+
     UPDATE_IF(brightness_day);
     UPDATE_IF(brightness_night);
     UPDATE_IF(wind_alert_threshold_kmh);
@@ -206,7 +222,7 @@ bool SettingsManager::updateFromJson(const JsonDocument& patch, bool saveAfter) 
     UPDATE_IF(weather_refresh_interval_ms);
     UPDATE_IF(weather_url);
     UPDATE_IF(humidity_alert_threshold);
-    UPDATE_IF(inverter_temp_alert_threshold_c); // AJOUT
+    UPDATE_IF(inverter_temp_alert_threshold_c);
     UPDATE_IF(daily_fetch_hour);
     UPDATE_IF(daily_fetch_minute);
     UPDATE_IF(pv_max_watts);
@@ -237,16 +253,21 @@ bool SettingsManager::updateFromJson(const JsonDocument& patch, bool saveAfter) 
     UPDATE_IF(topic_hp_price);
     UPDATE_IF(topic_sonometer_db);
     UPDATE_IF(topic_sonometer_laeq60);
-
-    #undef UPDATE_IF
+    
+#undef UPDATE_IF
 
     if (changed) {
         if (saveAfter) save();
         notify(_settings, old);
     }
+    
     return true;
 }
 
 void SettingsManager::notify(const AppSettings& now, const AppSettings& old) {
     for (auto& cb : _listeners) cb(now, old);
 }
+
+// ✅ SUPPRIMÉ: Ces fonctions sont déjà inline dans settings.h
+// void SettingsManager::onChange(...)
+// const AppSettings& SettingsManager::get() const

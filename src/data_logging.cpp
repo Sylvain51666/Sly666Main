@@ -3,10 +3,12 @@
 #include "state.h"
 #include "settings.h"
 #include "boot_ui.h"
+
 #include <SD.h>
+#include <time.h>
 #include <vector>
-#include <numeric>
 #include <algorithm>
+#include <numeric>  // ✅ AJOUT: Pour std::accumulate
 
 static char logBuffer[LOG_BUFFER_MAX_SIZE];
 static size_t logBufferPosition = 0;
@@ -16,15 +18,20 @@ static unsigned long lastTalonSampleTime = 0;
 
 extern volatile float g_rawMaisonW;
 extern portMUX_TYPE g_shellyMux;
+extern SemaphoreHandle_t g_sdMutex;
 
 namespace DataLogging {
 
 void init() {
-    if (!SD.exists("/talon")) SD.mkdir("/talon");
-    if (!SD.exists("/data")) SD.mkdir("/data");
-    if (!SD.exists(INVOICES_BASE_DIR)) SD.mkdir(INVOICES_BASE_DIR);
-    if (!SD.exists(DAILY_JSON_DIR)) SD.mkdir(DAILY_JSON_DIR);
-    if (!SD.exists(ARCHIVE_DIR)) SD.mkdir(ARCHIVE_DIR);
+    if (xSemaphoreTake(g_sdMutex, pdMS_TO_TICKS(2000)) == pdTRUE) {
+        if (!SD.exists("/talon")) SD.mkdir("/talon");
+        if (!SD.exists("/data")) SD.mkdir("/data");
+        if (!SD.exists(INVOICES_BASE_DIR)) SD.mkdir(INVOICES_BASE_DIR);
+        if (!SD.exists(DAILY_JSON_DIR)) SD.mkdir(DAILY_JSON_DIR);
+        if (!SD.exists(ARCHIVE_DIR)) SD.mkdir(ARCHIVE_DIR);
+        xSemaphoreGive(g_sdMutex);
+    }
+    
     logBuffer[0] = '\0';
 }
 
@@ -38,7 +45,7 @@ void writeLog(LogLevel level, const String& message) {
     } else {
         strcpy(timeStr, "00:00:00");
     }
-
+    
     String logEntry = String(timeStr) + " [" + levelStr[(int)level] + "] " + message + "\n";
     Serial.print(logEntry);
     
@@ -62,37 +69,50 @@ size_t getLogBufferLength() {
 void flushLogBufferToSD() {
     if (logBufferPosition == 0) return;
     
-    // OPTIMISATION: Ne pas bloquer si le buffer n'est pas assez plein
-    static unsigned long lastForceFlush = 0;
-    bool forcedFlush = (millis() - lastForceFlush > 30000);  // Force flush toutes les 30s max
-    
-    if (logBufferPosition < (LOG_BUFFER_MAX_SIZE * 0.8) && !forcedFlush) {
-        return;  // Ne flush que si > 80% plein ou timeout de 30s
+    if (xSemaphoreTake(g_sdMutex, pdMS_TO_TICKS(1000)) == pdTRUE) {
+        File logFile = SD.open(LOG_FILE, FILE_APPEND);
+        
+        if (logFile) {
+            logFile.print(logBuffer);
+            logFile.close();
+            
+            logBuffer[0] = '\0';
+            logBufferPosition = 0;
+            lastLogFlush = millis();
+        } else {
+            Serial.println("[ERROR] Failed to open log file for writing. Buffer preserved.");
+            
+            if (logBufferPosition >= LOG_BUFFER_MAX_SIZE * 0.9) {
+                size_t keepSize = LOG_BUFFER_MAX_SIZE / 2;
+                size_t discardSize = logBufferPosition - keepSize;
+                memmove(logBuffer, logBuffer + discardSize, keepSize);
+                logBuffer[keepSize] = '\0';
+                logBufferPosition = keepSize;
+                Serial.println("[WARN] Log buffer was 90% full, discarded oldest 50% of logs.");
+            }
+        }
+        
+        xSemaphoreGive(g_sdMutex);
+    } else {
+        Serial.println("[ERROR] Failed to acquire SD mutex for log flush.");
     }
-    
-    File logFile = SD.open(LOG_FILE, FILE_APPEND);
-    if (logFile) {
-        logFile.print(logBuffer);
-        logFile.close();
-    }
-    
-    logBuffer[0] = '\0';
-    logBufferPosition = 0;
-    lastLogFlush = millis();
-    lastForceFlush = millis();
 }
 
 void cleanupLogs() {
     flushLogBufferToSD();
-    File f = SD.open(LOG_FILE, FILE_READ);
-    if (f) {
-        if (f.size() > MAX_LOG_SIZE_BYTES) {
-            f.close();
-            SD.remove(LOG_FILE);
-            writeLog(LogLevel::LOG_INFO, "Log file cleaned (size exceeded)");
-        } else {
-            f.close();
+    
+    if (xSemaphoreTake(g_sdMutex, pdMS_TO_TICKS(2000)) == pdTRUE) {
+        File f = SD.open(LOG_FILE, FILE_READ);
+        if (f) {
+            if (f.size() > MAX_LOG_SIZE_BYTES) {
+                f.close();
+                SD.remove(LOG_FILE);
+                writeLog(LogLevel::LOG_INFO, "Log file cleaned (size exceeded)");
+            } else {
+                f.close();
+            }
         }
+        xSemaphoreGive(g_sdMutex);
     }
 }
 
@@ -100,89 +120,112 @@ void calculateTalonValue() {
     writeLog(LogLevel::LOG_INFO, "Starting talon calculation...");
     const char* sample_file = "/talon/power_samples.log";
     
-    if (!SD.exists(sample_file)) {
-        writeLog(LogLevel::LOG_WARN, "Talon sample file not found. Skipping.");
-        powerData.talon_power = "Pas de donnees";
-        return;
-    }
-
-    File f = SD.open(sample_file);
-    if (!f) {
-        writeLog(LogLevel::LOG_ERROR, "Failed to open talon sample file.");
-        powerData.talon_power = "Erreur lecture";
-        return;
-    }
-
-    std::vector<float> samples;
-    while (f.available()) {
-        samples.push_back(f.readStringUntil('\n').toFloat());
-        yield();  // OPTIMISATION: évite watchdog
-    }
-    f.close();
-    SD.remove(sample_file);
-
-    if (samples.size() < 10) {
-        writeLog(LogLevel::LOG_WARN, "Not enough samples for talon calc: " + String(samples.size()));
-        powerData.talon_power = "Donnees insuffisantes";
-        return;
-    }
-
-    std::sort(samples.begin(), samples.end());
-    int index = (int)(samples.size() * 0.20);
-    float talon = samples[index];
-    powerData.talon_power = String(talon, 0) + " W";
-    writeLog(LogLevel::LOG_INFO, "Talon calculated successfully: " + powerData.talon_power);
-
-    File history = SD.open("/talon/power_history.csv", FILE_APPEND);
-    if (history) {
-        struct tm timeinfo;
-        getLocalTime(&timeinfo);
-        char line[50];
-        sprintf(line, "%04d-%02d-%02d,%.0f\n", 
-                timeinfo.tm_year + 1900, timeinfo.tm_mon + 1, timeinfo.tm_mday, talon);
-        history.print(line);
-        history.close();
+    if (xSemaphoreTake(g_sdMutex, pdMS_TO_TICKS(3000)) == pdTRUE) {
+        if (!SD.exists(sample_file)) {
+            writeLog(LogLevel::LOG_WARN, "Talon sample file not found. Skipping.");
+            powerData.talon_power = "Pas de donnees";
+            xSemaphoreGive(g_sdMutex);
+            return;
+        }
+        
+        File f = SD.open(sample_file);
+        if (!f) {
+            writeLog(LogLevel::LOG_ERROR, "Failed to open talon sample file.");
+            powerData.talon_power = "Erreur lecture";
+            xSemaphoreGive(g_sdMutex);
+            return;
+        }
+        
+        std::vector<float> samples;
+        while (f.available()) {
+            samples.push_back(f.readStringUntil('\n').toFloat());
+            yield();
+        }
+        
+        f.close();
+        SD.remove(sample_file);
+        
+        xSemaphoreGive(g_sdMutex);
+        
+        if (samples.size() < 10) {
+            writeLog(LogLevel::LOG_WARN, "Not enough samples for talon calc: " + String(samples.size()));
+            powerData.talon_power = "Donnees insuffisantes";
+            return;
+        }
+        
+        std::sort(samples.begin(), samples.end());
+        int index = (int)(samples.size() * 0.20);
+        float talon = samples[index];
+        powerData.talon_power = String(talon, 0) + " W";
+        writeLog(LogLevel::LOG_INFO, "Talon calculated successfully: " + powerData.talon_power);
+        
+        if (xSemaphoreTake(g_sdMutex, pdMS_TO_TICKS(2000)) == pdTRUE) {
+            File history = SD.open("/talon/power_history.csv", FILE_APPEND);
+            if (history) {
+                struct tm timeinfo;
+                getLocalTime(&timeinfo);
+                char line[50];
+                sprintf(line, "%04d-%02d-%02d,%.0f\n",
+                    timeinfo.tm_year + 1900, timeinfo.tm_mon + 1, timeinfo.tm_mday, talon);
+                history.print(line);
+                history.close();
+            }
+            xSemaphoreGive(g_sdMutex);
+        }
+    } else {
+        writeLog(LogLevel::LOG_ERROR, "Failed to acquire SD mutex for talon calculation.");
     }
 }
 
 void handleTalonLogic() {
     struct tm timeinfo;
     if (!getLocalTime(&timeinfo)) return;
-
-    if (timeinfo.tm_hour == SETTINGS.talon_start_hour && 
-        timeinfo.tm_min == 0 && 
+    
+    if (timeinfo.tm_hour == SETTINGS.talon_start_hour &&
+        timeinfo.tm_min == 0 &&
         !sysState.isTalonWindow) {
         if (timeinfo.tm_yday != sysState.lastTalonCalculationDay) {
             sysState.isTalonWindow = true;
             sysState.talonCalculationPending = true;
             lastTalonSampleTime = 0;
-            if(SD.exists("/talon/power_samples.log")) SD.remove("/talon/power_samples.log");
+            
+            if (xSemaphoreTake(g_sdMutex, pdMS_TO_TICKS(1000)) == pdTRUE) {
+                if (SD.exists("/talon/power_samples.log")) {
+                    SD.remove("/talon/power_samples.log");
+                }
+                xSemaphoreGive(g_sdMutex);
+            }
+            
             writeLog(LogLevel::LOG_INFO, "Entering talon measurement window.");
         }
     }
-
-    if (timeinfo.tm_hour == SETTINGS.talon_end_hour && 
-        timeinfo.tm_min >= SETTINGS.talon_end_minute && 
+    
+    if (timeinfo.tm_hour == SETTINGS.talon_end_hour &&
+        timeinfo.tm_min >= SETTINGS.talon_end_minute &&
         sysState.isTalonWindow) {
         sysState.isTalonWindow = false;
         writeLog(LogLevel::LOG_INFO, "Exiting talon measurement window. Calculation is pending.");
     }
-
+    
     if (sysState.isTalonWindow && millis() - lastTalonSampleTime >= 60000) {
         lastTalonSampleTime = millis();
+        
         portENTER_CRITICAL(&g_shellyMux);
         float currentPower = g_rawMaisonW;
         portEXIT_CRITICAL(&g_shellyMux);
         
         if (!isnan(currentPower)) {
-            File f = SD.open("/talon/power_samples.log", FILE_APPEND);
-            if (f) {
-                f.println(currentPower);
-                f.close();
+            if (xSemaphoreTake(g_sdMutex, pdMS_TO_TICKS(1000)) == pdTRUE) {
+                File f = SD.open("/talon/power_samples.log", FILE_APPEND);
+                if (f) {
+                    f.println(currentPower);
+                    f.close();
+                }
+                xSemaphoreGive(g_sdMutex);
             }
         }
     }
-
+    
     if (!sysState.isTalonWindow && sysState.talonCalculationPending) {
         calculateTalonValue();
         sysState.talonCalculationPending = false;
@@ -193,7 +236,7 @@ void handleTalonLogic() {
 void saveDailyWaterConsumption() {
     struct tm timeinfo;
     if (!getLocalTime(&timeinfo)) return;
-
+    
     if (timeinfo.tm_hour == 23 && timeinfo.tm_min == 59) {
         if (timeinfo.tm_yday != lastSaveDay) {
             lastSaveDay = timeinfo.tm_yday;
@@ -203,23 +246,28 @@ void saveDailyWaterConsumption() {
                 writeLog(LogLevel::LOG_WARN, "Water consumption is 0 or invalid, not saving.");
                 return;
             }
-
-            char filename[32];
-            sprintf(filename, "/data/water_%04d_%02d.csv", 
-                    timeinfo.tm_year + 1900, timeinfo.tm_mon + 1);
             
-            File dataFile = SD.open(filename, FILE_APPEND);
-            if (!dataFile) {
-                writeLog(LogLevel::LOG_ERROR, "Failed to open " + String(filename) + " for writing");
-                return;
-            }
-
-            char dataLine[32];
-            sprintf(dataLine, "%04d-%02d-%02d,%.0f\n", 
+            char filename[32];
+            sprintf(filename, "/data/water_%04d_%02d.csv",
+                timeinfo.tm_year + 1900, timeinfo.tm_mon + 1);
+            
+            if (xSemaphoreTake(g_sdMutex, pdMS_TO_TICKS(2000)) == pdTRUE) {
+                File dataFile = SD.open(filename, FILE_APPEND);
+                if (!dataFile) {
+                    writeLog(LogLevel::LOG_ERROR, "Failed to open " + String(filename) + " for writing");
+                    xSemaphoreGive(g_sdMutex);
+                    return;
+                }
+                
+                char dataLine[32];
+                sprintf(dataLine, "%04d-%02d-%02d,%.0f\n",
                     timeinfo.tm_year + 1900, timeinfo.tm_mon + 1, timeinfo.tm_mday, consumption);
-            dataFile.print(dataLine);
-            dataFile.close();
-            writeLog(LogLevel::LOG_INFO, "Saved daily water consumption: " + String(consumption) + "L to " + String(filename));
+                dataFile.print(dataLine);
+                dataFile.close();
+                
+                xSemaphoreGive(g_sdMutex);
+                writeLog(LogLevel::LOG_INFO, "Saved daily water consumption: " + String(consumption) + "L to " + String(filename));
+            }
         }
     } else {
         if (timeinfo.tm_yday != lastSaveDay) {
@@ -237,37 +285,43 @@ void calculateWaterStats() {
         writeLog(LogLevel::LOG_ERROR, "Cannot get time for water stats calculation.");
         return;
     }
-
+    
     std::vector<float> dailyReadings;
     float monthlyTotals[12] = {0.0f};
     int currentYear = timeinfo.tm_year + 1900;
     int currentMonth = timeinfo.tm_mon + 1;
-
-    for (int m = 1; m <= 12; ++m) {
-        char filename[32];
-        sprintf(filename, "/data/water_%04d_%02d.csv", currentYear, m);
-        
-        if (SD.exists(filename)) {
-            File file = SD.open(filename);
-            if (file) {
-                while (file.available()) {
-                    String line = file.readStringUntil('\n');
-                    int commaIndex = line.indexOf(',');
-                    if (commaIndex != -1) {
-                        float value = line.substring(commaIndex + 1).toFloat();
-                        dailyReadings.push_back(value);
-                        if (m <= currentMonth) {
-                            monthlyTotals[m-1] += value;
+    
+    if (xSemaphoreTake(g_sdMutex, pdMS_TO_TICKS(5000)) == pdTRUE) {
+        for (int m = 1; m <= 12; ++m) {
+            char filename[32];
+            sprintf(filename, "/data/water_%04d_%02d.csv", currentYear, m);
+            
+            if (SD.exists(filename)) {
+                File file = SD.open(filename);
+                if (file) {
+                    while (file.available()) {
+                        String line = file.readStringUntil('\n');
+                        int commaIndex = line.indexOf(',');
+                        if (commaIndex != -1) {
+                            float value = line.substring(commaIndex + 1).toFloat();
+                            dailyReadings.push_back(value);
+                            if (m <= currentMonth) {
+                                monthlyTotals[m-1] += value;
+                            }
                         }
+                        yield();
                     }
-                    yield();  // OPTIMISATION: évite watchdog dans les grosses boucles
+                    file.close();
                 }
-                file.close();
             }
+            yield();
         }
-        yield();  // OPTIMISATION: évite watchdog entre les mois
+        xSemaphoreGive(g_sdMutex);
+    } else {
+        writeLog(LogLevel::LOG_ERROR, "Failed to acquire SD mutex for water stats.");
+        return;
     }
-
+    
     if (!dailyReadings.empty()) {
         std::reverse(dailyReadings.begin(), dailyReadings.end());
         g_waterStats.yesterday = String(dailyReadings[0], 0) + " L";
@@ -283,8 +337,10 @@ void calculateWaterStats() {
         }
         
         float sumYear = std::accumulate(dailyReadings.begin(), dailyReadings.end(), 0.0f);
-        if (!dailyReadings.empty()) g_waterStats.avgYear = String(sumYear / dailyReadings.size(), 0) + " L";
-
+        if (!dailyReadings.empty()) {
+            g_waterStats.avgYear = String(sumYear / dailyReadings.size(), 0) + " L";
+        }
+        
         float maxConsumption = 0.0;
         int bestMonthIdx = -1;
         for (int i = 0; i < 12; ++i) {
@@ -292,16 +348,16 @@ void calculateWaterStats() {
                 maxConsumption = monthlyTotals[i];
                 bestMonthIdx = i;
             }
-            yield();  // OPTIMISATION
+            yield();
         }
-
+        
         if (bestMonthIdx != -1) {
-            const char* monthNames[] = {"Jan", "Fev", "Mar", "Avr", "Mai", "Juin", 
-                                       "Juil", "Aou", "Sep", "Oct", "Nov", "Dec"};
+            const char* monthNames[] = {"Jan", "Fev", "Mar", "Avr", "Mai", "Juin",
+                                        "Juil", "Aou", "Sep", "Oct", "Nov", "Dec"};
             g_waterStats.bestMonth = String(monthNames[bestMonthIdx]) + " (" + String(maxConsumption, 0) + "L)";
         }
     }
-
+    
     g_waterStats.dataLoaded = true;
     writeLog(LogLevel::LOG_INFO, "Water statistics calculation complete.");
 }

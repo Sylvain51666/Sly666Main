@@ -1,17 +1,19 @@
 #pragma once
+
 #include "M5Unified.h"
 #include "config.h"
 #include <vector>
 #include <deque>
 
 // ============================== ENUMS ==============================
+
 enum class SystemStateType { STATE_OK, STATE_NO_WIFI, STATE_NO_MQTT, STATE_NO_DATA };
 enum class DisplayMode { MODE_AUTO = 0, MODE_FORCE_DAY = 1, MODE_FORCE_NIGHT = 2 };
 enum class LogLevel { LOG_INFO, LOG_WARN, LOG_ERROR, LOG_DEBUG };
 enum class Screen { SCREEN_DASHBOARD, SCREEN_INVOICES, SCREEN_SONOMETER };
 
-
 // ============================== STRUCTURES DE DONNÉES ==============================
+
 // --- État général du système ---
 struct SystemState {
     SystemStateType type = SystemStateType::STATE_OK;
@@ -37,7 +39,7 @@ struct DisplayState {
     String debugInfo = "";
     bool isWindIconOnScreen = false;
     bool isHumidityIconOnScreen = false;
-    bool isFlameIconOnScreen = false; // AJOUT
+    bool isFlameIconOnScreen = false;
 };
 
 // --- Données liées à la puissance électrique ---
@@ -66,7 +68,7 @@ struct SensorData {
     float temp_onduleur2 = -999.0f;
     float studioHumidity = -1.0f;
     bool isPumpRunning = false;
-    float pac_value_float = NAN; // Variable numérique dédiée pour la PAC
+    float pac_value_float = NAN;
 };
 
 struct WeatherData {
@@ -124,16 +126,15 @@ struct InvoiceData {
     String lastApiError = "N/A";
     int lastApiHttpCode = 0;
     size_t lastJsonSize = 0;
-    std::deque<float> dailyCosts;
+    std::deque<double> dailyCosts;
 };
 
-
 // ============================== DÉCLARATIONS EXTERNES ==============================
+
 extern SystemState sysState;
 extern DisplayState dispState;
 extern PowerData powerData;
 extern SensorData sensorData;
-
 extern WeatherData g_weather;
 extern SolarTimes g_solarTimes;
 extern PowerStats g_powerStats;
@@ -143,4 +144,8 @@ extern InvoiceData g_invoiceData;
 
 extern std::vector<uint8_t> g_wind_icon_png;
 extern std::vector<uint8_t> g_humidity_icon_png;
-extern std::vector<uint8_t> g_flame_icon_png; // AJOUT
+extern std::vector<uint8_t> g_flame_icon_png;
+
+// ============================== CORRECTION #2: MUTEX POUR SD ==============================
+// Protection des écritures SD contre les race conditions
+extern SemaphoreHandle_t g_sdMutex;
