@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>M5Core2 • Paramètres</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <header class="topbar">
+    <h1>Paramètres M5Core2</h1>
+    <button id="btn-reboot" class="btn ghost">Redémarrer l'appareil</button>
+  </header>
+
+  <main id="content">
+    <div id="status" class="status"></div>
+
+    <form id="settings-form" class="card"></form>
+    <div class="actions">
+      <button type="button" id="btn-save" class="btn primary">Sauvegarder</button>
+    </div>
+
+    <hr class="section-divider">
+    <h2 class="section-title">Informations en direct</h2>
+    <div id="debug-container" class="debug-grid">
+      </div>
+
+  </main>
+
+  <footer class="footer">Modifs appliquées sans redémarrage quand possible.</footer>
+  <script src="/app.js"></script>
+</body>
+</html>
